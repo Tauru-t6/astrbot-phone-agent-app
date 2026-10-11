@@ -19,6 +19,9 @@ import kotlin.coroutines.resume
 /** Serializes phone mutations and deduplicates retries across transports/restarts. */
 class CommandRunner(private val context: Context, private val executor: ShizukuCommandExecutor) {
     var onDangerousCommand: (suspend (CommandEnvelope) -> Boolean)? = null
+
+    // Actions the user has explicitly opted out of the on-device prompt.
+    var autoApproveActions: () -> Set<String> = { emptySet() }
     var onCommandStarted: ((CommandEnvelope) -> Unit)? = null
     var onCommandFinished: ((CommandEnvelope, ResultEnvelope) -> Unit)? = null
     private val gate = Mutex()
@@ -43,8 +46,9 @@ class CommandRunner(private val context: Context, private val executor: ShizukuC
             val remaining = ((envelope.createdAtEpochSec + envelope.deadline) * 1000 - System.currentTimeMillis()).toLong().coerceAtLeast(1)
             val result = try {
                 withTimeoutOrNull(remaining) {
-                    if ((envelope.dangerous || envelope.action in DANGEROUS_ACTIONS) &&
-                        onDangerousCommand?.invoke(envelope) != true) {
+                    val needsConfirmation = (envelope.dangerous || envelope.action in DANGEROUS_ACTIONS) &&
+                        envelope.action !in autoApproveActions()
+                    if (needsConfirmation && onDangerousCommand?.invoke(envelope) != true) {
                         envelope.result(false, code = "denied", error = "操作未在手机上获得确认")
                     } else execute(envelope)
                 } ?: envelope.result(false, code = "timeout", error = "命令等待或执行超时")

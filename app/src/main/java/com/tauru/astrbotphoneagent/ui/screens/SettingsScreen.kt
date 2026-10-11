@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.LockPerson
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.PrivacyTip
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -161,6 +162,13 @@ fun SettingsScreen(appState: AppState) {
                 onClick = { panel = "tasks" },
             )
             PaperInfoRow(
+                icon = Icons.Outlined.Tune,
+                title = "隐私与自动化",
+                detail = "设置通知转发，以及哪些操作免确认。",
+                state = "设置 ›",
+                onClick = { panel = "automation" },
+            )
+            PaperInfoRow(
                 icon = Icons.Outlined.Person,
                 title = "名字与头像",
                 detail = "选择本地头像，设置聊天中的显示名称。",
@@ -186,6 +194,7 @@ fun SettingsScreen(appState: AppState) {
         "permissions" -> PermissionSettingsSheet(appState) { panel = null }
         "tasks" -> LifeActivitySheet(appState, "tasks") { panel = null }
         "profile" -> companion?.let { ProfileSettingsSheet(appState, it) { panel = null } }
+        "automation" -> AutomationSettingsSheet(appState) { panel = null }
     }
 }
 

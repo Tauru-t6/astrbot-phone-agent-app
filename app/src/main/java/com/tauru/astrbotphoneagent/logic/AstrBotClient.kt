@@ -161,6 +161,22 @@ class AstrBotClient(private val config: LogicConfig) {
     suspend fun cancelReminder(id: String): JSONObject =
         pluginRequest("/app/reminders/cancel", JSONObject().put("reminder_id", id))
 
+    /**
+     * Dashboard route: start or stop the plugin's temporary app guard. The
+     * plugin owns the protected-app list, so the app never guesses packages.
+     */
+    suspend fun setSleepMode(mode: String, minutes: Int): JSONObject =
+        pluginRequest("/sleep_mode", JSONObject().put("mode", mode).put("minutes", minutes))
+
+    /** Dashboard route: apply a one-shot policy to a single package. */
+    suspend fun setAppPolicy(action: String, packageName: String, minutes: Int = 0): JSONObject =
+        pluginRequest("/app_policy", JSONObject().put("action", action)
+            .put("package", packageName).put("minutes", minutes))
+
+    /** App API: forward notifications captured on the phone to the plugin. */
+    suspend fun postNotifications(entries: List<JSONObject>): JSONObject =
+        pluginRequest("/app/notifications", JSONObject().put("notifications", org.json.JSONArray(entries)))
+
     private suspend fun pluginRequest(path: String, payload: JSONObject? = null): JSONObject {
         val pluginUrl = config.pluginUrl()
         val token = config.pluginJwt()

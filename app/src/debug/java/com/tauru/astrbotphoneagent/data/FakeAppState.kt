@@ -3,8 +3,8 @@ package com.tauru.astrbotphoneagent.data
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
- * Fake implementation so every screen renders in @Preview and in a demo build.
- * GLM replaces the DI binding with a real implementation; UI code never changes.
+ * Preview-only implementation so every screen renders in @Preview without a
+ * device. Debug source set; never shipped in a release build.
  */
 class FakeAppState : AppState {
 
@@ -22,12 +22,12 @@ class FakeAppState : AppState {
 
     override val quickActions = MutableStateFlow(
         listOf(
-            QuickAction("focus_mode", "进专注", "半小时不看屏幕", "self_improvement", dangerous = false, active = false),
-            QuickAction("screenshot", "截屏", "我看看你在哪", "screenshot", dangerous = false, active = false),
-            QuickAction("night_mode", "守夜", "11 点后不接非急的", "bedtime", dangerous = false, active = true),
-            QuickAction("locate", "你在哪", "定位发我一下", "place", dangerous = true, active = false),
-            QuickAction("battery", "看电量", "报一下耗电", "battery_std", dangerous = false, active = false),
-            QuickAction("lock_apps", "锁几个 app", "这一小时别碰", "lock", dangerous = true, active = false),
+            QuickAction("focus_mode", "专注", "30 分钟不看视频", "self_improvement", dangerous = false, active = false),
+            QuickAction("screenshot", "截屏", "保存到系统相册", "screenshot", dangerous = false, active = false),
+            QuickAction("night_mode", "守夜", "限制受控应用 8 小时", "bedtime", dangerous = false, active = true),
+            QuickAction("locate", "获取位置", "操作前需要确认", "place", dangerous = true, active = false),
+            QuickAction("battery", "查看电量", "读取设备状态", "battery_std", dangerous = false, active = false),
+            QuickAction("release_apps", "解除限制", "恢复所有受控应用", "lock", dangerous = false, active = false),
         )
     )
 
@@ -64,6 +64,7 @@ class FakeAppState : AppState {
     override val connectionSettings = MutableStateFlow(ConnectionSettings())
     override val diagnostics = MutableStateFlow(AppDiagnostics())
     override val pendingConfirmation = MutableStateFlow<AgentTask?>(null)
+    override val automationSettings = MutableStateFlow(AutomationSettings())
 
     override suspend fun sendChat(text: String) { /* fake: no-op */ }
     override suspend fun runQuickAction(actionId: String) {

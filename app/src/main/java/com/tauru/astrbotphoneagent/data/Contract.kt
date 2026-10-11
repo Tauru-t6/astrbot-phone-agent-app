@@ -6,9 +6,8 @@ import kotlinx.coroutines.flow.flowOf
 /**
  * UI <-> Logic contract.
  *
- * Kimi owns: everything in ui/ (screens, components, theme) and consumes
- * only these interfaces + data classes. GLM implements the interfaces.
- * UI ships with [FakeAppState] so every screen previews without logic.
+ * The UI layer depends only on these interfaces and data classes, so screens
+ * preview against [FakeAppState] without touching logic or the network.
  *
  * Rules of the seam:
  * - UI never calls Shizuku / HTTP / Room directly. Everything goes through AppState.
@@ -119,6 +118,12 @@ data class AppDiagnostics(
 
 data class ActionFeedback(val success: Boolean, val message: String)
 
+// User-controlled automation preferences, mirrored from local storage.
+data class AutomationSettings(
+    val autoApproveActions: Set<String> = setOf("screenshot"),
+    val notificationForwarding: Boolean = false,
+)
+
 // ---------- the seam ----------
 
 interface AppState {
@@ -133,6 +138,7 @@ interface AppState {
     val connectionSettings: Flow<ConnectionSettings> get() = flowOf(ConnectionSettings())
     val diagnostics: Flow<AppDiagnostics> get() = flowOf(AppDiagnostics())
     val pendingConfirmation: Flow<AgentTask?> get() = flowOf(null)
+    val automationSettings: Flow<AutomationSettings> get() = flowOf(AutomationSettings())
 
     // Intents (suspend, fast-returning; outcomes come through the flows)
     suspend fun sendChat(text: String)
@@ -146,4 +152,5 @@ interface AppState {
     suspend fun saveConnectionSettings(update: ConnectionUpdate): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun testConnection(): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun saveCompanionProfile(name: String, avatarUri: String?): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun saveAutomationSettings(update: AutomationSettings): ActionFeedback = ActionFeedback(false, "暂不可用")
 }

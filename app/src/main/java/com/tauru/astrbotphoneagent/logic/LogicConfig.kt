@@ -1,6 +1,7 @@
 package com.tauru.astrbotphoneagent.logic
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -28,6 +29,8 @@ class LogicConfig(private val context: Context) {
         val relayBaseUrl = stringPreferencesKey("relay_base_url")
         val relayToken = stringPreferencesKey("relay_token")
         val deviceName = stringPreferencesKey("device_name")
+        val autoApproveActions = stringPreferencesKey("auto_approve_actions")
+        val notificationForwarding = booleanPreferencesKey("notification_forwarding")
     }
 
     companion object {
@@ -47,6 +50,10 @@ class LogicConfig(private val context: Context) {
         const val DEFAULT_DASHBOARD_JWT = ""
         // The OpenAPI key is intentionally provisioned after installation.
         const val DEFAULT_OPENAPI_KEY = ""
+        // Sensitive actions still prompt on the phone unless the user lists them
+        // here. A screenshot is user-requested and delivered to the user's own
+        // conversation, so it is pre-approved; screen_text is not.
+        const val DEFAULT_AUTO_APPROVE = "screenshot"
     }
 
     val astrbotBaseUrl: Flow<String> = context.logicDataStore.data.map { it[Keys.astrbotBaseUrl] ?: DEFAULT_ASTRBOT_URL }
@@ -59,6 +66,10 @@ class LogicConfig(private val context: Context) {
     val relayBaseUrl: Flow<String> = context.logicDataStore.data.map { it[Keys.relayBaseUrl] ?: DEFAULT_RELAY_URL }
     val relayToken: Flow<String> = context.logicDataStore.data.map { it[Keys.relayToken] ?: DEFAULT_RELAY_TOKEN }
     val deviceName: Flow<String> = context.logicDataStore.data.map { it[Keys.deviceName] ?: "phone" }
+    val autoApproveActionsFlow: Flow<String> =
+        context.logicDataStore.data.map { it[Keys.autoApproveActions] ?: DEFAULT_AUTO_APPROVE }
+    val notificationForwardingFlow: Flow<Boolean> =
+        context.logicDataStore.data.map { it[Keys.notificationForwarding] ?: false }
 
     val connectionSettings: Flow<ConnectionSettings> = context.logicDataStore.data.map { prefs ->
         ConnectionSettings(
@@ -84,10 +95,17 @@ class LogicConfig(private val context: Context) {
     suspend fun pluginJwt(): String = pluginJwt.first()
     suspend fun relayUrl(): String = relayBaseUrl.first().trimEnd('/')
     suspend fun relayTokenValue(): String = relayToken.first()
+    suspend fun autoApproveActions(): Set<String> =
+        autoApproveActionsFlow.first().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    suspend fun notificationForwarding(): Boolean = notificationForwardingFlow.first()
 
     suspend fun update(updates: Map<String, String>) {
         context.logicDataStore.edit { prefs ->
             for ((key, value) in updates) {
+                if (key == "notification_forwarding") {
+                    prefs[Keys.notificationForwarding] = value.trim().lowercase() in setOf("1", "true", "on", "yes")
+                    continue
+                }
                 val prefKey = when (key) {
                     "astrbot_base_url" -> Keys.astrbotBaseUrl
                     "openapi_key" -> Keys.openApiKey
@@ -99,6 +117,7 @@ class LogicConfig(private val context: Context) {
                     "relay_base_url" -> Keys.relayBaseUrl
                     "relay_token" -> Keys.relayToken
                     "device_name" -> Keys.deviceName
+                    "auto_approve_actions" -> Keys.autoApproveActions
                     else -> null
                 }
                 if (prefKey != null) prefs[prefKey] = value

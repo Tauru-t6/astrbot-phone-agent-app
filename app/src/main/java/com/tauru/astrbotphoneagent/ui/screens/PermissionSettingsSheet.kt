@@ -80,6 +80,9 @@ internal fun PermissionSettingsSheet(appState: AppState, onDismiss: () -> Unit) 
             PermissionEntry("使用情况访问", "用于读取屏幕使用时间和应用使用统计。") {
                 openSettings(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:${context.packageName}")))
             }
+            PermissionEntry("通知读取权限", "把手机通知转发给 AstrBot，用于回答“有人找我吗”。需要单独授权。") {
+                openSettings(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+            }
             PermissionEntry("通知设置", "开启提醒通知，并调整声音与锁屏显示。") {
                 openSettings(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
             }

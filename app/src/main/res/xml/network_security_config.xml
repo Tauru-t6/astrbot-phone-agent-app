@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The command channel runs over the user's own LAN or a Tailscale tailnet and is
+  authenticated with a shared bearer token. Tailscale already encrypts the
+  transport, but a plain LAN deployment speaks HTTP, so cleartext must be
+  permitted for the app to function. It is permitted here explicitly instead of
+  through the blunt android:usesCleartextTraffic flag, and https:// URLs always
+  use TLS. Prefer a Tailscale address over raw LAN when the network is untrusted.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

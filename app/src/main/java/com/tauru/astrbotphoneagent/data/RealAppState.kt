@@ -43,6 +43,8 @@ class RealAppState(context: Context) : AppState {
     override val diagnostics = _diagnostics.asStateFlow()
     private val _pendingConfirmation = MutableStateFlow<AgentTask?>(null)
     override val pendingConfirmation = _pendingConfirmation.asStateFlow()
+    private val _automation = MutableStateFlow(AutomationSettings())
+    override val automationSettings = _automation.asStateFlow()
     private val confirmations = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
     private val taskJobs = ConcurrentHashMap<String, Job>()
     private val actionIds = ConcurrentHashMap<String, String>()
@@ -55,6 +57,10 @@ class RealAppState(context: Context) : AppState {
     private val persistRequests = Channel<Unit>(Channel.CONFLATED)
     private val ready = CompletableDeferred<Unit>()
 
+    // Mirrors the user's auto-approve list so the confirmation gate can read it
+    // without suspending.
+    @Volatile private var autoApprove: Set<String> = emptySet()
+
     init {
         runner.onCommandStarted = { command ->
             upsertTask(AgentTask(command.commandId, commandTitle(command.action), TaskStatus.RUNNING,
@@ -62,8 +68,14 @@ class RealAppState(context: Context) : AppState {
                 canCancel = taskJobs.containsKey(command.commandId)))
         }
         runner.onDangerousCommand = { command -> awaitConfirmation(command) }
+        runner.autoApproveActions = { autoApprove }
         runner.onCommandFinished = { command, result -> finishTask(command, result) }
         scope.launch(Dispatchers.IO) {
+            autoApprove = runCatching { config.autoApproveActions() }.getOrDefault(emptySet())
+            _automation.value = AutomationSettings(
+                autoApproveActions = autoApprove,
+                notificationForwarding = runCatching { config.notificationForwarding() }.getOrDefault(false),
+            )
             loadHistory()
             ready.complete(Unit)
             launch { for (ignored in persistRequests) persistHistory() }
@@ -75,6 +87,21 @@ class RealAppState(context: Context) : AppState {
 
     override suspend fun saveCompanionProfile(name: String, avatarUri: String?): ActionFeedback =
         profileRepository.save(name, avatarUri)
+
+    override suspend fun saveAutomationSettings(update: AutomationSettings): ActionFeedback {
+        val allowed = update.autoApproveActions.intersect(DANGEROUS_ACTIONS)
+        return try {
+            config.update(mapOf(
+                "auto_approve_actions" to allowed.joinToString(","),
+                "notification_forwarding" to if (update.notificationForwarding) "true" else "false",
+            ))
+            autoApprove = allowed
+            _automation.value = AutomationSettings(allowed, update.notificationForwarding)
+            ActionFeedback(true, "已保存")
+        } catch (_: Exception) {
+            ActionFeedback(false, "保存失败，请重试")
+        }
+    }
 
     private suspend fun collectDeviceStatus() {
         combine(bridge.lastStatus, bridge.bridgeState, _reminders) { snapshot, connection, reminders ->
@@ -175,13 +202,25 @@ class RealAppState(context: Context) : AppState {
     override suspend fun runQuickAction(actionId: String) {
         ready.await()
         val action = _quickActions.value.firstOrNull { it.id == actionId } ?: return
+        // The plugin owns the protected-package list, so guard actions are
+        // server routes rather than device commands.
+        val guard = when (actionId) {
+            "focus_mode" -> Triple("start", 30, "已开启 30 分钟专注")
+            "night_mode" -> Triple("start", 480, "已开启守夜，8 小时后自动恢复")
+            "release_apps" -> Triple("stop", 0, "已解除应用限制")
+            else -> null
+        }
+        if (guard != null) {
+            runGuardAction(actionId, action.title, guard.first, guard.second, guard.third)
+            return
+        }
         val commandAction = when (actionId) {
             "screenshot" -> "screenshot"
             "locate" -> "location"
             "battery" -> "status"
             else -> {
                 upsertTask(AgentTask("t-${UUID.randomUUID()}", action.title, TaskStatus.FAILED, now(), now(), null,
-                    "尚未配置受控应用和自动恢复策略，此功能暂不可用"))
+                    "该快捷操作尚未接入，请改用聊天指令"))
                 return
             }
         }
@@ -210,6 +249,32 @@ class RealAppState(context: Context) : AppState {
                     error = "任务已取消", errorCode = "cancelled", finishedAtEpochSec = now() / 1000.0))
         }
         job.start()
+    }
+
+    private fun runGuardAction(actionId: String, title: String, mode: String, minutes: Int, successText: String) {
+        val taskId = "t-${UUID.randomUUID()}"
+        actionIds[taskId] = actionId
+        upsertTask(AgentTask(taskId, title, TaskStatus.RUNNING, now(), null, null, null, canCancel = false))
+        val job = scope.launch {
+            try {
+                val result = client.setSleepMode(mode, minutes)
+                val ok = result.optBoolean("success")
+                val detail = if (ok) successText else result.optString("error").ifBlank { "服务器未接受该请求" }
+                finishGuardTask(taskId, title, ok, detail)
+            } catch (cancelled: CancellationException) {
+                finishGuardTask(taskId, title, false, "任务已取消")
+                throw cancelled
+            } catch (error: Exception) {
+                finishGuardTask(taskId, title, false, safeError(error))
+            } finally { taskJobs.remove(taskId) }
+        }
+        taskJobs[taskId] = job
+    }
+
+    private fun finishGuardTask(taskId: String, title: String, success: Boolean, detail: String) {
+        val time = now()
+        upsertTask(AgentTask(taskId, title, if (success) TaskStatus.SUCCESS else TaskStatus.FAILED,
+            time, time, detail.take(400), if (success) null else detail.take(400)))
     }
 
     private suspend fun awaitConfirmation(command: CommandEnvelope): Boolean {
@@ -445,11 +510,11 @@ class RealAppState(context: Context) : AppState {
         else -> "手机操作"
     }
     private fun defaultQuickActions() = listOf(
-        QuickAction("focus_mode", "专注", "需先配置受控应用", "self_improvement", false, false),
+        QuickAction("focus_mode", "专注", "30 分钟不看视频", "self_improvement", false, false),
         QuickAction("screenshot", "截屏", "保存到系统相册", "screenshot", false, false),
-        QuickAction("night_mode", "夜间模式", "需先配置恢复策略", "bedtime", false, false),
+        QuickAction("night_mode", "守夜", "限制受控应用 8 小时", "bedtime", false, false),
         QuickAction("locate", "获取位置", "操作前需要确认", "place", true, false),
         QuickAction("battery", "查看电量", "读取设备状态", "battery_std", false, false),
-        QuickAction("lock_apps", "暂停应用", "需先配置受控应用", "lock", true, false),
+        QuickAction("release_apps", "解除限制", "恢复所有受控应用", "lock", false, false),
     )
 }

@@ -7,6 +7,8 @@ import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Authenticated command endpoint, with byte-correct HTTP framing. */
 class CommandServer(
@@ -16,6 +18,8 @@ class CommandServer(
 ) {
     private var serverJob: Job? = null
     @Volatile private var socket: ServerSocket? = null
+    private val activeConnections = AtomicInteger(0)
+    private val recentRequests = ConcurrentHashMap<String, MutableList<Long>>()
 
     @Synchronized
     fun start(port: Int = 8260): Int {
@@ -27,8 +31,16 @@ class CommandServer(
         serverJob = scope.launch(Dispatchers.IO) {
             while (isActive && !listener.isClosed) {
                 val client = try { listener.accept() } catch (_: Exception) { break }
+                // Any LAN peer can reach this port, so bound concurrency instead
+                // of spawning one coroutine per accepted socket.
+                if (activeConnections.get() >= MAX_CONNECTIONS) {
+                    runCatching { client.close() }
+                    continue
+                }
+                activeConnections.incrementAndGet()
                 launch {
                     try { handle(client) } catch (_: Exception) { runCatching { client.close() } }
+                    finally { activeConnections.decrementAndGet() }
                 }
             }
         }
@@ -48,6 +60,11 @@ class CommandServer(
     private suspend fun handle(client: Socket) {
         client.use { peer ->
             peer.soTimeout = 15_000
+            val peerAddress = runCatching { peer.inetAddress?.hostAddress.orEmpty() }.getOrDefault("")
+            if (rateLimited(peerAddress)) {
+                respond(peer, 429, """{"success":false,"error":"too many requests"}""")
+                return
+            }
             val request = try { HttpCommandRequest.read(peer.getInputStream()) }
             catch (error: HttpCommandRequest.Invalid) {
                 respond(peer, error.status, JSONObject().put("success", false).put("error", error.message).toString())
@@ -83,9 +100,27 @@ class CommandServer(
         respond(peer, 200, protocolJson.encodeToString(ResultEnvelope.serializer(), result))
     }
 
+    // Sliding-window limiter, keyed by peer address, so a brute-force token
+    // guess cannot run unbounded from one host.
+    private fun rateLimited(address: String): Boolean {
+        val now = System.currentTimeMillis()
+        val bucket = recentRequests.computeIfAbsent(address) { mutableListOf() }
+        val limited = synchronized(bucket) {
+            bucket.removeAll { now - it > RATE_WINDOW_MS }
+            if (bucket.size >= RATE_LIMIT_PER_WINDOW) true else { bucket.add(now); false }
+        }
+        if (recentRequests.size > MAX_TRACKED_PEERS) {
+            recentRequests.entries.removeIf { (_, value) -> synchronized(value) { value.isEmpty() } }
+        }
+        return limited
+    }
+
     private fun respond(peer: Socket, code: Int, json: String) {
         val bytes = json.toByteArray(Charsets.UTF_8)
-        val reason = when (code) { 200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 404 -> "Not Found"; 413 -> "Payload Too Large"; else -> "Error" }
+        val reason = when (code) {
+            200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 404 -> "Not Found"
+            413 -> "Payload Too Large"; 429 -> "Too Many Requests"; else -> "Error"
+        }
         peer.getOutputStream().apply {
             write("HTTP/1.1 $code $reason\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
             write(bytes); flush()
@@ -93,6 +128,11 @@ class CommandServer(
     }
 
     companion object {
+        private const val MAX_CONNECTIONS = 16
+        private const val RATE_LIMIT_PER_WINDOW = 240
+        private const val RATE_WINDOW_MS = 60_000L
+        private const val MAX_TRACKED_PEERS = 256
+
         fun tokenFingerprint(token: String): String = "sha256:" + MessageDigest.getInstance("SHA-256")
             .digest(token.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }.take(16)
 
