@@ -9,7 +9,7 @@ import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.WindowManager
-import android.widget.Button
+import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.tauru.astrbotphoneagent.data.TaskApproval
@@ -66,50 +66,68 @@ object ApprovalOverlay {
         val density = context.resources.displayMetrics.density
         fun dp(value: Int): Int = (value * density).toInt()
 
+        // A small accent bar and a self-drawn action pair: the default Material
+        // Button looked like a system dialog glued onto a dark card.
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(14), dp(18), dp(14))
+            setPadding(dp(20), dp(16), dp(20), dp(16))
             background = GradientDrawable().apply {
-                cornerRadius = dp(18).toFloat()
-                setColor(Color.parseColor("#F2202A38"))
-                setStroke(dp(1), Color.parseColor("#33FFFFFF"))
+                cornerRadius = dp(22).toFloat()
+                setColor(Color.parseColor("#F2182233"))
+                setStroke(dp(1), Color.parseColor("#24FFFFFF"))
             }
-            elevation = dp(10).toFloat()
+            elevation = dp(14).toFloat()
         }
+
+        val accent = View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(28), dp(3)).apply { bottomMargin = dp(12) }
+            background = GradientDrawable().apply {
+                cornerRadius = dp(2).toFloat()
+                setColor(Color.parseColor("#7C9BFF"))
+            }
+        }
+        card.addView(accent)
 
         card.addView(TextView(context).apply {
             text = "有一件事要你点头"
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            setTextColor(Color.parseColor("#F2F6FF"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         card.addView(TextView(context).apply {
             text = "${approval.actions.joinToString("、") { ApprovalLabels.action(it) }} · ${secondsLeft} 秒内有效"
-            setTextColor(Color.parseColor("#C9D3E4"))
+            setTextColor(Color.parseColor("#9FB0C8"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(0, dp(6), 0, dp(12))
+            setLineSpacing(dp(2).toFloat(), 1f)
+            setPadding(0, dp(6), 0, dp(16))
         })
 
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
-        }
-        val allow = Button(context).apply {
-            text = "允许"
-            setOnClickListener {
-                dismiss()
-                onApprove()
+        fun actionButton(label: String, fill: Int, stroke: Int, textColor: Int, onClick: () -> Unit): TextView =
+            TextView(context).apply {
+                text = label
+                gravity = Gravity.CENTER
+                setTextColor(textColor)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(13).toFloat()
+                    setColor(fill)
+                    if (stroke != Color.TRANSPARENT) setStroke(dp(1), stroke)
+                }
+                isClickable = true
+                setOnClickListener { onClick() }
             }
-        }
-        val reject = Button(context).apply {
-            text = "拒绝"
-            setOnClickListener {
-                dismiss()
-                onReject()
-            }
-        }
-        row.addView(allow)
-        row.addView(reject)
+
+        val allow = actionButton(
+            "允许", Color.parseColor("#5B7CFA"), Color.TRANSPARENT, Color.WHITE,
+        ) { dismiss(); onApprove() }
+        val reject = actionButton(
+            "拒绝", Color.TRANSPARENT, Color.parseColor("#33FFFFFF"), Color.parseColor("#C9D3E4"),
+        ) { dismiss(); onReject() }
+
+        val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(allow, LinearLayout.LayoutParams(0, dp(46), 1f).apply { rightMargin = dp(10) })
+        row.addView(reject, LinearLayout.LayoutParams(0, dp(46), 1f))
         card.addView(row)
 
         val params = WindowManager.LayoutParams(
