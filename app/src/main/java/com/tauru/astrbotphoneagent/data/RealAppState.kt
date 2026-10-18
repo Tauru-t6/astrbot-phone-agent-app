@@ -198,6 +198,21 @@ class RealAppState(context: Context) : AppState {
                 )
             }
             // P1-E: executed task runs (dry-run or real), newest first.
+            // Stage 4: proposals waiting for a human decision.
+            val taskApprovals = state.optJSONArray("task_approvals")?.let { arr ->
+                (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { item ->
+                    TaskApproval(
+                        approvalId = item.optString("approval_id", ""),
+                        runId = item.optString("run_id", ""),
+                        actions = item.optJSONArray("actions")?.let { list ->
+                            (0 until list.length()).map { list.optString(it) }.filter { it.isNotBlank() }
+                        } ?: emptyList(),
+                        status = item.optString("status", ""),
+                        expiresAt = item.optDouble("expires_at", 0.0),
+                        reason = item.optString("reason", ""),
+                    )
+                }
+            } ?: emptyList()
             val taskRuns = state.optJSONArray("task_runs")?.let { arr ->
                 (0 until arr.length()).mapNotNull { index -> arr.optJSONObject(index) }.map { item ->
                     val summary = item.optJSONObject("summary")
@@ -255,6 +270,7 @@ class RealAppState(context: Context) : AppState {
                 backend = state.optString("backend", ""),
                 care = care,
                 taskRuns = taskRuns,
+                taskApprovals = taskApprovals,
                 taskExecuteEnabled = state.optBoolean("task_execute_enabled", false),
             )
             // Both a due event and an explicit notify bit are required. Old history never alerts.
@@ -520,6 +536,42 @@ class RealAppState(context: Context) : AppState {
             requestPersist()
             scope.launch { bridge.refreshServerState() }
             ActionFeedback(true, "提醒已取消")
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { ActionFeedback(false, safeError(error)) }
+    }
+
+    override suspend fun approveTask(approvalId: String): ActionFeedback = decideTask(approvalId, true)
+
+    override suspend fun rejectTask(approvalId: String, reason: String): ActionFeedback {
+        ready.await()
+        if (approvalId.isBlank()) return ActionFeedback(false, "找不到这条待批任务")
+        return try {
+            val result = client.rejectTask(approvalId, reason)
+            scope.launch { bridge.refreshServerState() }
+            if (result.optBoolean("success")) ActionFeedback(true, "已拒绝")
+            else ActionFeedback(false, result.optString("error").ifBlank { "服务器拒绝了请求" })
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { ActionFeedback(false, safeError(error)) }
+    }
+
+    private suspend fun decideTask(approvalId: String, approved: Boolean): ActionFeedback {
+        ready.await()
+        if (approvalId.isBlank()) return ActionFeedback(false, "找不到这条待批任务")
+        return try {
+            val result = client.approveTask(approvalId)
+            scope.launch { bridge.refreshServerState() }
+            if (result.optBoolean("success")) {
+                val run = result.optJSONObject("run")
+                val verified = run?.optJSONObject("summary")?.optInt("verified", 0) ?: 0
+                val refused = run?.optJSONObject("summary")?.optString("refused", "").orEmpty()
+                when {
+                    refused.isNotBlank() -> ActionFeedback(false, "已批准，但执行被拒绝：$refused")
+                    verified > 0 -> ActionFeedback(true, "已批准并执行，核验通过 $verified 步")
+                    else -> ActionFeedback(true, "已批准，任务已执行")
+                }
+            } else {
+                ActionFeedback(false, result.optString("error").ifBlank { "服务器拒绝了请求" })
+            }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) { ActionFeedback(false, safeError(error)) }
     }

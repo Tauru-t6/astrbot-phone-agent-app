@@ -11,11 +11,17 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -23,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import com.tauru.astrbotphoneagent.data.AppDiagnostics
 import com.tauru.astrbotphoneagent.data.AppState
 import com.tauru.astrbotphoneagent.data.ConnectionState
+import kotlinx.coroutines.launch
 
 /**
  * 自主功能总览与诊断。
@@ -42,6 +49,8 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
     val deviceStatus by appState.deviceStatus.collectAsState(initial = null)
     val overview by appState.autonomyOverview.collectAsState(initial = null)
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    val scope = rememberCoroutineScope()
+    var decisionNotice by remember { mutableStateOf("") }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -190,6 +199,34 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                 }
             }
 
+            val pendingApprovals = overview?.taskApprovals.orEmpty().filter { it.status == "pending" }
+            if (pendingApprovals.isNotEmpty()) {
+                HorizontalDivider()
+                Text("待你决定", style = MaterialTheme.typography.titleMedium)
+                pendingApprovals.forEach { approval ->
+                    CapabilityRow(
+                        title = approval.actions.joinToString("、") { taskActionLabel(it) },
+                        value = approvalCountdown(approval.expiresAt),
+                        detail = "批准后才执行；不点就自动放弃。",
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                decisionNotice = appState.approveTask(approval.approvalId).message
+                            }
+                        }) { Text("允许这一次") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                decisionNotice = appState.rejectTask(approval.approvalId, "用户在 App 里拒绝").message
+                            }
+                        }) { Text("拒绝") }
+                    }
+                }
+                if (decisionNotice.isNotBlank()) {
+                    Text(decisionNotice, style = MaterialTheme.typography.bodySmall, color = muted)
+                }
+            }
+
             HorizontalDivider()
             Text("最近任务", style = MaterialTheme.typography.titleMedium)
             val taskRuns = overview?.taskRuns.orEmpty()
@@ -310,8 +347,30 @@ private fun careReasonLabel(reason: String): String = when (reason) {
     else -> reason
 }
 
-private fun taskStatusLabel(run: com.tauru.astrbotphoneagent.data.TaskRunSummary): String = when (run.status) {
-    "done" -> "完成"
+private fun taskActionLabel(action: String): String = when (action) {
+    "open_app" -> "打开应用"
+    "close_app" -> "关闭应用"
+    "suspend_app" -> "暂停应用"
+    "unsuspend_app" -> "恢复应用"
+    "home" -> "回到桌面"
+    "back" -> "返回"
+    "lock_screen" -> "锁屏"
+    "tap" -> "点击"
+    "input_text" -> "输入文字"
+    else -> action
+}
+
+private fun approvalCountdown(expiresAt: Double): String {
+    if (expiresAt <= 0.0) return "等待你的决定"
+    val left = (expiresAt - System.currentTimeMillis() / 1000.0).toInt()
+    return when {
+        left <= 0 -> "已过期"
+        left < 60 -> "${left} 秒后过期"
+        else -> "${left / 60} 分钟后过期"
+    }
+}
+
+private fun taskStatusLabel(run: com.tauru.astrbotphoneagent.data.TaskRunSummary): String = when (run.status) {    "done" -> "完成"
     "failed" -> if (run.refused.isNotBlank()) "被拒绝" else "失败"
     "cancelled" -> "已取消"
     "running", "executing", "verifying" -> "执行中"

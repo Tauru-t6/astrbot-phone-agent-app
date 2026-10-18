@@ -200,6 +200,15 @@ class AstrBotClient(private val config: LogicConfig) {
         pluginRequest("/app_policy", JSONObject().put("action", action)
             .put("package", packageName).put("minutes", minutes))
 
+    /** Stage 4: decide a proposed task. Both routes answer with the updated record. */
+    suspend fun approveTask(approvalId: String, allowWhileActive: Boolean = false): JSONObject =
+        pluginRequest("/app/task/approve", JSONObject().put("approval_id", approvalId)
+            .put("allow_while_active", allowWhileActive))
+
+    suspend fun rejectTask(approvalId: String, reason: String = ""): JSONObject =
+        pluginRequest("/app/task/reject", JSONObject().put("approval_id", approvalId)
+            .put("reason", reason))
+
     /** App API: forward notifications captured on the phone to the plugin. */
     suspend fun postNotifications(entries: List<JSONObject>): JSONObject =
         pluginRequest("/app/notifications", JSONObject().put("notifications", org.json.JSONArray(entries)))

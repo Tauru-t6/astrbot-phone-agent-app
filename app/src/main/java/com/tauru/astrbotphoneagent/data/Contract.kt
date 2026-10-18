@@ -182,6 +182,16 @@ data class TaskRunStep(
     val detail: String = "",
 )
 
+// Stage 4: a proposed run waiting for a human decision.
+data class TaskApproval(
+    val approvalId: String = "",
+    val runId: String = "",
+    val actions: List<String> = emptyList(),
+    val status: String = "",
+    val expiresAt: Double = 0.0,
+    val reason: String = "",
+)
+
 data class AutonomyOverview(
     val nightGuard: NightGuardState = NightGuardState(),
     val sleepModeActive: Boolean = false,
@@ -191,6 +201,7 @@ data class AutonomyOverview(
     val backend: String = "",
     val care: CareStatus? = null,
     val taskRuns: List<TaskRunSummary> = emptyList(),
+    val taskApprovals: List<TaskApproval> = emptyList(),
     val taskExecuteEnabled: Boolean = false,
 )
 
@@ -246,6 +257,8 @@ interface AppState {
     suspend fun retryTask(taskId: String)
     suspend fun refreshStatus()                               // pull-to-refresh hook
     suspend fun createReminder(text: String, minutes: Int): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun approveTask(approvalId: String): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun rejectTask(approvalId: String, reason: String = ""): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun cancelReminder(reminderId: String): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun saveConnectionSettings(update: ConnectionUpdate): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun testConnection(): ActionFeedback = ActionFeedback(false, "暂不可用")
