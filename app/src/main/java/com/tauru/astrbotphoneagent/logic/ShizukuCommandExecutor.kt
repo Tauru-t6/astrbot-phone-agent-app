@@ -229,12 +229,20 @@ class ShizukuCommandExecutor(private val context: Context) {
     private var session: ShellSession? = null
     private val sessionLock = Any()
 
+    // Diagnostics: is the persistent shell in use, and how long a call took.
+    @Volatile private var lastShellMillis: Long = 0
+    @Volatile private var sessionError: String = ""
+
+    private fun sessionMode(): String = if (session != null) "session" else "oneshot"
+
     private fun sessionOrNull(): ShellSession? = synchronized(sessionLock) {
         val current = session
         if (current != null) return current
         return try {
-            ShellSession().also { session = it }
-        } catch (_: Exception) {
+            ShellSession().also { session = it; sessionError = "" }
+        } catch (error: Throwable) {
+            // Surfaced through foreground_debug so the heartbeat carries it.
+            sessionError = (error.javaClass.simpleName + ": " + (error.message ?: "")).take(90)
             null
         }
     }
@@ -247,6 +255,7 @@ class ShizukuCommandExecutor(private val context: Context) {
     }
 
     private fun shell(command: String, timeoutMs: Long = 25_000L): CommandOutcome {
+        val started = System.currentTimeMillis()
         val live = sessionOrNull()
         if (live != null) {
             val outcome = live.run(command, timeoutMs)
@@ -254,10 +263,12 @@ class ShizukuCommandExecutor(private val context: Context) {
             // failing the command outright.
             if (outcome is CommandOutcome.Ok || (outcome as? CommandOutcome.Fail)?.errorCode != "shell_closed") {
                 if (outcome is CommandOutcome.Fail && outcome.errorCode == "timeout") dropSession()
+                lastShellMillis = System.currentTimeMillis() - started
                 return outcome
             }
             dropSession()
         }
+        lastShellMillis = System.currentTimeMillis() - started
         return shellOnce(command, timeoutMs)
     }
 
@@ -381,9 +392,12 @@ class ShizukuCommandExecutor(private val context: Context) {
             ""
         }
         val screenInteractive = screenInteractiveState()
+        val debug = if (sessionError.isBlank()) foregroundDebug else (foregroundDebug + "|" + sessionError).take(160)
         val output = JSONObject().put("foreground_package", foreground)
-            .put("foreground_debug", foregroundDebug)
+            .put("foreground_debug", debug)
             .put("shizuku_ready", ready)
+            .put("shell_mode", sessionMode())
+            .put("last_shell_ms", lastShellMillis)
             .put("screen_interactive", if (screenInteractive == null) JSONObject.NULL else screenInteractive)
             .toString()
         return CommandOutcome.Ok(output)
@@ -417,7 +431,9 @@ class ShizukuCommandExecutor(private val context: Context) {
             .put("screen_on_seconds_today", screenToday)
             .put("screen_interactive", if (screenInteractive == null) JSONObject.NULL else screenInteractive)
             .put("shizuku_ready", ready)
-            .put("foreground_debug", foregroundDebug)
+            .put("shell_mode", sessionMode())
+            .put("last_shell_ms", lastShellMillis)
+            .put("foreground_debug", if (sessionError.isBlank()) foregroundDebug else (foregroundDebug + "|" + sessionError).take(160))
             .toString()
         return CommandOutcome.Ok(output)
     }
@@ -463,19 +479,23 @@ class ShizukuCommandExecutor(private val context: Context) {
         // Activity first: the window dump times out on some OEMs (8 s of the
         // 12.8 s we measured), while the activity grep answers in a few seconds.
         val commands = listOf(
-            "dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|ResumedActivity' | head -3",
-            "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | head -3",
+            "activity" to "dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|ResumedActivity' | head -3",
+            "window" to "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | head -3",
         )
         var failure = ""
-        for (command in commands) {
+        for ((source, command) in commands) {
+            val started = System.currentTimeMillis()
             when (val outcome = shell(command, 3_000L)) {
                 is CommandOutcome.Fail -> failure = "shell_fail:" + outcome.message
                 is CommandOutcome.Ok ->
-                    PACKAGE_REGEX.find(outcome.output)?.value?.let { return it to "" }
+                    PACKAGE_REGEX.find(outcome.output)?.value?.let {
+                        return it to "src=$source ms=${System.currentTimeMillis() - started}"
+                    }
             }
         }
+        val fallbackStart = System.currentTimeMillis()
         val fallback = foregroundFromUsageStats()
-        if (fallback.isNotBlank()) return fallback to "usage_stats"
+        if (fallback.isNotBlank()) return fallback to "src=usage ms=${System.currentTimeMillis() - fallbackStart}"
         return "" to failure.ifBlank { "empty:no_package" }
     }
 
