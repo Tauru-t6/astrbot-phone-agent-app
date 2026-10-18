@@ -191,10 +191,49 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
             }
 
             HorizontalDivider()
+            Text("最近任务", style = MaterialTheme.typography.titleMedium)
+            val taskRuns = overview?.taskRuns.orEmpty()
+            if (taskRuns.isEmpty()) {
+                CapabilityRow(
+                    title = "任务记录",
+                    value = "暂无",
+                    detail = "还没有执行过任务。试跑与真实执行都会记在这里。",
+                )
+            } else {
+                taskRuns.take(3).forEach { taskRun ->
+                    CapabilityRow(
+                        title = taskRun.goal.ifBlank { "未命名任务" },
+                        value = taskStatusLabel(taskRun),
+                        detail = buildString {
+                            if (taskRun.dryRun) append("试跑")
+                            if (taskRun.executed > 0) {
+                                if (isNotEmpty()) append(" · ")
+                                append("执行 ${taskRun.executed} · 核验通过 ${taskRun.verified}")
+                            }
+                            if (taskRun.failed > 0) append(" · 失败 ${taskRun.failed}")
+                            if (taskRun.blocked > 0) append(" · 阻止 ${taskRun.blocked}")
+                            if (taskRun.refused.isNotBlank()) {
+                                if (isNotEmpty()) append(" · ")
+                                append("被拒：${taskRefusedLabel(taskRun.refused)}")
+                            }
+                            taskRun.steps.forEach { step -> append("\n${taskStepLabel(step)}") }
+                        },
+                    )
+                }
+            }
+            if (overview?.taskExecuteEnabled == false) {
+                Text(
+                    "真实执行当前关闭（服务端 enable_task_execute=false），这里只会有试跑记录。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = muted,
+                )
+            }
+
+            HorizontalDivider()
             Text("后续版本", style = MaterialTheme.typography.titleMedium)
             UnsupportedRow(
-                title = "自主手机任务（多步运行）",
-                detail = "按范围授权、观察→规划→执行→验证的 run/step 状态机、后台审批与屏幕观察预览属于同一阶段的契约，尚未交付。现有任务均为单次命令。",
+                title = "自主手机任务（第 4 段）",
+                detail = "后台审批（系统通知与深链）、点击/输入类动作尚未开放。现阶段执行器只跑 open_app/home/back 这类可核验动作，且默认拒绝在用户正在使用手机时执行。",
             )
         }
     }
@@ -269,4 +308,43 @@ private fun careReasonLabel(reason: String): String = when (reason) {
     "budget_unavailable" -> "预算不可写"
     "authorization_revoked" -> "授权已撤销"
     else -> reason
+}
+
+private fun taskStatusLabel(run: com.tauru.astrbotphoneagent.data.TaskRunSummary): String = when (run.status) {
+    "done" -> "完成"
+    "failed" -> if (run.refused.isNotBlank()) "被拒绝" else "失败"
+    "cancelled" -> "已取消"
+    "running", "executing", "verifying" -> "执行中"
+    "planning" -> "规划中"
+    else -> run.status.ifBlank { "未知" }
+}
+
+private fun taskRefusedLabel(reason: String): String = when (reason) {
+    "user_active" -> "你当时正在用手机"
+    "stale_observation" -> "观察过期"
+    else -> reason
+}
+
+private fun taskStepLabel(step: com.tauru.astrbotphoneagent.data.TaskRunStep): String {
+    val action = when (step.action) {
+        "observe" -> "观察"
+        "home" -> "回桌面"
+        "back" -> "返回"
+        "open_app" -> "打开应用"
+        "close_app" -> "关闭应用"
+        "suspend_app" -> "暂停应用"
+        "unsuspend_app" -> "恢复应用"
+        "screenshot" -> "截图"
+        else -> step.action
+    }
+    val status = when (step.status) {
+        "done" -> "通过"
+        "failed" -> "失败"
+        "skipped" -> "跳过"
+        "executed_unverified" -> "已执行·未核验"
+        "unknown" -> "结果未知"
+        else -> step.status
+    }
+    val suffix = if (step.status == "done") "" else "（${taskRefusedLabel(step.reason.ifBlank { step.status })}）"
+    return "· $action $status$suffix"
 }

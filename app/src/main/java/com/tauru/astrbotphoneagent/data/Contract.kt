@@ -160,6 +160,28 @@ data class NightGuardState(
     val lastError: String = "",
 )
 
+// P1-E: one executed (or refused) task run, as served by /app/state task_runs.
+data class TaskRunSummary(
+    val runId: String = "",
+    val goal: String = "",
+    val status: String = "",
+    val dryRun: Boolean = false,
+    val executed: Int = 0,
+    val verified: Int = 0,
+    val failed: Int = 0,
+    val blocked: Int = 0,
+    val refused: String = "",
+    val lastError: String = "",
+    val steps: List<TaskRunStep> = emptyList(),
+)
+
+data class TaskRunStep(
+    val action: String = "",
+    val status: String = "",
+    val reason: String = "",
+    val detail: String = "",
+)
+
 data class AutonomyOverview(
     val nightGuard: NightGuardState = NightGuardState(),
     val sleepModeActive: Boolean = false,
@@ -168,6 +190,8 @@ data class AutonomyOverview(
     val features: Map<String, Boolean> = emptyMap(),
     val backend: String = "",
     val care: CareStatus? = null,
+    val taskRuns: List<TaskRunSummary> = emptyList(),
+    val taskExecuteEnabled: Boolean = false,
 )
 
 // P1-D: read-only care snapshot written by the companion bridge. The app never

@@ -197,6 +197,36 @@ class RealAppState(context: Context) : AppState {
                     } ?: emptyList(),
                 )
             }
+            // P1-E: executed task runs (dry-run or real), newest first.
+            val taskRuns = state.optJSONArray("task_runs")?.let { arr ->
+                (0 until arr.length()).mapNotNull { index -> arr.optJSONObject(index) }.map { item ->
+                    val summary = item.optJSONObject("summary")
+                    TaskRunSummary(
+                        runId = item.optString("run_id", ""),
+                        goal = item.optString("goal", ""),
+                        status = item.optString("status", ""),
+                        dryRun = summary?.optBoolean("dry_run", false) ?: false,
+                        executed = summary?.optInt("executed", 0) ?: 0,
+                        verified = summary?.optInt("verified", 0) ?: 0,
+                        failed = summary?.optInt("failed", 0) ?: 0,
+                        blocked = summary?.optInt("blocked", 0) ?: 0,
+                        refused = summary?.optString("refused", "").orEmpty(),
+                        lastError = item.optString("last_error", ""),
+                        steps = item.optJSONArray("steps")?.let { steps ->
+                            (0 until steps.length()).mapNotNull { steps.optJSONObject(it) }.map { step ->
+                                TaskRunStep(
+                                    action = step.optString("action", ""),
+                                    status = step.optString("status", ""),
+                                    reason = (step.optJSONObject("verify") ?: org.json.JSONObject())
+                                        .optString("reason", ""),
+                                    detail = (step.optJSONObject("verify") ?: org.json.JSONObject())
+                                        .optString("detail", ""),
+                                )
+                            }
+                        } ?: emptyList(),
+                    )
+                }
+            } ?: emptyList()
             _autonomyOverview.value = AutonomyOverview(
                 nightGuard = NightGuardState(
                     enabled = ng?.optBoolean("enabled", false) ?: false,
@@ -224,6 +254,8 @@ class RealAppState(context: Context) : AppState {
                 } ?: emptyMap(),
                 backend = state.optString("backend", ""),
                 care = care,
+                taskRuns = taskRuns,
+                taskExecuteEnabled = state.optBoolean("task_execute_enabled", false),
             )
             // Both a due event and an explicit notify bit are required. Old history never alerts.
             val serverNow = state.optDouble("server_time", System.currentTimeMillis() / 1000.0)
