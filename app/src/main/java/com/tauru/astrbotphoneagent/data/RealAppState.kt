@@ -219,13 +219,23 @@ class RealAppState(context: Context) : AppState {
                 it.status == "pending" && it.expiresAt > System.currentTimeMillis() / 1000.0
             }
             if (pendingApproval != null) {
-                ApprovalOverlay.show(
+                val shown = ApprovalOverlay.show(
                     appContext, pendingApproval,
                     secondsLeft = (pendingApproval.expiresAt - System.currentTimeMillis() / 1000.0)
                         .toInt().coerceAtLeast(0),
                     onApprove = { scope.launch { approveTask(pendingApproval.approvalId) } },
                     onReject = { scope.launch { rejectTask(pendingApproval.approvalId, "悬浮窗拒绝") } },
                 )
+                // The floating card is best effort; a notification always works.
+                if (!shown) {
+                    val actions = pendingApproval.actions.joinToString("、") { ApprovalLabels.action(it) }
+                    Notifier.post(
+                        appContext,
+                        "有一件事要你点头",
+                        "$actions · 打开 App 后可在自主功能里允许或拒绝",
+                        "approval-${pendingApproval.approvalId}",
+                    )
+                }
             } else {
                 ApprovalOverlay.dismiss()
             }

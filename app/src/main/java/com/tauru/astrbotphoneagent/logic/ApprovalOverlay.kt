@@ -25,6 +25,11 @@ object ApprovalOverlay {
     private var overlay: LinearLayout? = null
     private var shownApproval = ""
 
+    /** Last failure reason, shown in the autonomy sheet so it is not silent. */
+    @Volatile
+    var lastError: String = ""
+        private set
+
     fun canDraw(context: Context): Boolean = Settings.canDrawOverlays(context)
 
     fun requestPermission(context: Context) {
@@ -42,11 +47,17 @@ object ApprovalOverlay {
         secondsLeft: Int,
         onApprove: () -> Unit,
         onReject: () -> Unit,
-    ) {
-        if (!canDraw(context)) return
-        if (shownApproval == approval.approvalId && overlay != null) return
+    ): Boolean {
+        if (!canDraw(context)) {
+            lastError = "没有悬浮窗权限"
+            return false
+        }
+        if (shownApproval == approval.approvalId && overlay != null) return true
         dismiss()
-        val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
+        val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: run {
+            lastError = "无法取得 WindowManager"
+            return false
+        }
         val density = context.resources.displayMetrics.density
         fun dp(value: Int): Int = (value * density).toInt()
 
@@ -114,10 +125,18 @@ object ApprovalOverlay {
             }
             horizontalMargin = 0.08f
         }
-        runCatching { windowManager.addView(card, params) }.onSuccess {
-            overlay = card
-            shownApproval = approval.approvalId
-        }
+        return runCatching { windowManager.addView(card, params) }.fold(
+            onSuccess = {
+                overlay = card
+                shownApproval = approval.approvalId
+                lastError = ""
+                true
+            },
+            onFailure = { error ->
+                lastError = error.javaClass.simpleName + ": " + (error.message ?: "")
+                false
+            },
+        )
     }
 
     fun dismiss() {
