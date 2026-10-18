@@ -230,19 +230,23 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
             val context = androidx.compose.ui.platform.LocalContext.current
             val canOverlay = com.tauru.astrbotphoneagent.logic.ApprovalOverlay.canDraw(context)
             val overlayError = com.tauru.astrbotphoneagent.logic.ApprovalOverlay.lastError
-            if (!canOverlay || overlayError.isNotBlank()) {
-                CapabilityRow(
-                    title = "悬浮弹窗授权",
-                    value = if (canOverlay) "上次失败" else "未开启",
-                    detail = overlayError.ifBlank {
-                        "开启后，需要你点头的任务会直接弹在当前应用上方，不用进来找。"
-                    },
-                )
-                if (!canOverlay) {
-                    OutlinedButton(onClick = {
-                        com.tauru.astrbotphoneagent.logic.ApprovalOverlay.requestPermission(context)
-                    }) { Text("去开启「显示在其他应用的上层」") }
-                }
+            val overlayAttempts = com.tauru.astrbotphoneagent.logic.ApprovalOverlay.attempts
+            CapabilityRow(
+                title = "悬浮弹窗",
+                value = when {
+                    !canOverlay -> "未开启"
+                    overlayError.isNotBlank() -> "失败"
+                    overlayAttempts == 0 -> "已开启 · 还没弹过"
+                    else -> "已开启 · 弹出 $overlayAttempts 次"
+                },
+                detail = overlayError.ifBlank {
+                    if (!canOverlay) "开启后，需要你点头的任务会直接弹在当前应用上方。" else null
+                },
+            )
+            if (!canOverlay) {
+                OutlinedButton(onClick = {
+                    com.tauru.astrbotphoneagent.logic.ApprovalOverlay.requestPermission(context)
+                }) { Text("去开启「显示在其他应用的上层」") }
             }
 
             HorizontalDivider()

@@ -24,10 +24,15 @@ object ApprovalOverlay {
 
     private var overlay: LinearLayout? = null
     private var shownApproval = ""
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
-    /** Last failure reason, shown in the autonomy sheet so it is not silent. */
+    /** Last failure reason and how often we tried; both are shown in the sheet. */
     @Volatile
     var lastError: String = ""
+        private set
+
+    @Volatile
+    var attempts: Int = 0
         private set
 
     fun canDraw(context: Context): Boolean = Settings.canDrawOverlays(context)
@@ -125,18 +130,21 @@ object ApprovalOverlay {
             }
             horizontalMargin = 0.08f
         }
-        return runCatching { windowManager.addView(card, params) }.fold(
-            onSuccess = {
+        attempts += 1
+        // WindowManager only accepts a view from a thread with a Looper, and the
+        // caller is a background coroutine, so the add has to hop to the main
+        // thread. Doing it inline threw and the exception was swallowed.
+        mainHandler.post {
+            try {
+                windowManager.addView(card, params)
                 overlay = card
                 shownApproval = approval.approvalId
                 lastError = ""
-                true
-            },
-            onFailure = { error ->
+            } catch (error: Throwable) {
                 lastError = error.javaClass.simpleName + ": " + (error.message ?: "")
-                false
-            },
-        )
+            }
+        }
+        return true
     }
 
     fun dismiss() {
