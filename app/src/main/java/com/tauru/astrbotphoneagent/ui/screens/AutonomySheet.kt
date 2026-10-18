@@ -227,6 +227,19 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                 }
             }
 
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val canOverlay = com.tauru.astrbotphoneagent.logic.ApprovalOverlay.canDraw(context)
+            if (!canOverlay) {
+                CapabilityRow(
+                    title = "悬浮弹窗授权",
+                    value = "未开启",
+                    detail = "开启后，需要你点头的任务会直接弹在当前应用上方，不用进来找。",
+                )
+                OutlinedButton(onClick = {
+                    com.tauru.astrbotphoneagent.logic.ApprovalOverlay.requestPermission(context)
+                }) { Text("去开启「显示在其他应用的上层」") }
+            }
+
             HorizontalDivider()
             Text("最近任务", style = MaterialTheme.typography.titleMedium)
             val taskRuns = overview?.taskRuns.orEmpty()

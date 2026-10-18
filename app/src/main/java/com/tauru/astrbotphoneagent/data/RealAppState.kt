@@ -213,6 +213,22 @@ class RealAppState(context: Context) : AppState {
                     )
                 }
             } ?: emptyList()
+            // Stage 4: surface a pending approval over the current screen when
+            // the overlay permission is granted; otherwise it stays in the sheet.
+            val pendingApproval = taskApprovals.firstOrNull {
+                it.status == "pending" && it.expiresAt > System.currentTimeMillis() / 1000.0
+            }
+            if (pendingApproval != null) {
+                ApprovalOverlay.show(
+                    appContext, pendingApproval,
+                    secondsLeft = (pendingApproval.expiresAt - System.currentTimeMillis() / 1000.0)
+                        .toInt().coerceAtLeast(0),
+                    onApprove = { scope.launch { approveTask(pendingApproval.approvalId) } },
+                    onReject = { scope.launch { rejectTask(pendingApproval.approvalId, "悬浮窗拒绝") } },
+                )
+            } else {
+                ApprovalOverlay.dismiss()
+            }
             val taskRuns = state.optJSONArray("task_runs")?.let { arr ->
                 (0 until arr.length()).mapNotNull { index -> arr.optJSONObject(index) }.map { item ->
                     val summary = item.optJSONObject("summary")
