@@ -40,6 +40,19 @@ class ShizukuCommandExecutor(private val context: Context) {
         false
     }
 
+    /** Why Shizuku is (not) usable, so the UI can say which half is missing. */
+    fun shizukuDiagnostic(): String = try {
+        when {
+            !Shizuku.pingBinder() -> "服务未运行"
+            Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED -> "未授权"
+            else -> "可用"
+        }
+    } catch (_: IllegalStateException) {
+        "服务未运行"
+    } catch (_: Throwable) {
+        "状态未知"
+    }
+
     fun execute(action: String, args: Map<String, String>): CommandOutcome {
         if (action !in COMMAND_ACTIONS) {
             return CommandOutcome.Fail("unsupported_action", "unknown action: " + action)
@@ -132,7 +145,7 @@ class ShizukuCommandExecutor(private val context: Context) {
 
     // ---------- shell ----------
 
-    private fun shell(command: String): CommandOutcome {
+    private fun shell(command: String, timeoutMs: Long = 25_000L): CommandOutcome {
         val process = newProcess(command + " 2>&1")
             ?: return CommandOutcome.Fail("shizuku_unavailable", "Shizuku 无法创建命令进程")
         val bytes = ByteArrayOutputStream()
@@ -153,13 +166,35 @@ class ShizukuCommandExecutor(private val context: Context) {
         reader.isDaemon = true
         reader.start()
         try {
-            if (!process.waitFor(25, TimeUnit.SECONDS)) return CommandOutcome.Fail("timeout", "手机命令执行超时")
+            // Shizuku's remote process throws IllegalThreadStateException
+            // ("process hasn't exited") from waitFor(timeout, unit); it only
+            // implements the no-arg wait. Poll exitValue() with a deadline
+            // instead, or every shell action fails before it runs.
+            if (!awaitExit(process, timeoutMs)) return CommandOutcome.Fail("timeout", "手机命令执行超时")
             reader.join(1000)
             if (reader.isAlive) return CommandOutcome.Fail("timeout", "命令输出未完成")
             val output = bytes.toString(Charsets.UTF_8.name()).trim()
             return if (process.exitValue() == 0) CommandOutcome.Ok(output.ifEmpty { "ok" })
             else CommandOutcome.Fail("shell_failed", output.take(200))
         } finally { process.destroy() }
+    }
+
+    /** Wait for a Shizuku remote process to exit, tolerating its limited API. */
+    private fun awaitExit(process: Process, timeoutMs: Long): Boolean {
+        // Shizuku implements only the no-arg waitFor(); its timed overload
+        // throws and exitValue() is unreliable while the remote side has not
+        // been reaped. Block on waitFor() in a daemon thread and put the
+        // deadline on the join instead.
+        val waiter = Thread { runCatching { process.waitFor() } }
+        waiter.isDaemon = true
+        waiter.start()
+        return try {
+            waiter.join(timeoutMs)
+            !waiter.isAlive
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
     }
 
     // Binary-safe variant. Never merges stderr and never decodes as UTF-8.
@@ -181,7 +216,7 @@ class ShizukuCommandExecutor(private val context: Context) {
         reader.isDaemon = true
         reader.start()
         try {
-            if (!process.waitFor(30, TimeUnit.SECONDS)) return null
+            if (!awaitExit(process, 30_000L)) return null
             reader.join(2000)
             if (reader.isAlive) return null
             if (process.exitValue() != 0) return null
@@ -210,31 +245,112 @@ class ShizukuCommandExecutor(private val context: Context) {
     // ---------- read-only inspection ----------
 
     private fun status(): CommandOutcome {
-        val model = android.os.Build.MODEL
-        val battery = batteryState()
-        val foreground = if (shizukuReady()) foregroundPackageOnly() else ""
-        val screenToday = screenOnSecondsToday()
-        val output = JSONObject().put("model", model)
+        // Each probe is isolated: one failing source must not blank the whole
+        // snapshot. A Shizuku shell hiccup used to zero out battery, foreground
+        // and screen time together, which looked like "permissions not given".
+        val battery = try { batteryState() } catch (_: Exception) { BatteryState(-1, false) }
+        val ready = try { shizukuReady() } catch (_: Throwable) { false }
+        var foregroundDebug = ""
+        val foreground = try {
+            if (ready) {
+                val probe = foregroundProbe()
+                foregroundDebug = probe.second
+                probe.first
+            } else {
+                foregroundDebug = "shizuku_not_ready"
+                ""
+            }
+        } catch (error: Exception) {
+            foregroundDebug = ("probe_exception:" + (error.message ?: error.javaClass.simpleName)).take(120)
+            ""
+        }
+        val screenToday = try { screenOnSecondsToday() } catch (_: Exception) { 0L }
+        val screenInteractive = screenInteractiveState()
+        val output = JSONObject().put("model", android.os.Build.MODEL)
             .put("battery_percent", if (battery.level >= 0) battery.level else JSONObject.NULL)
             .put("charging", battery.charging).put("foreground_package", foreground)
-            .put("screen_on_seconds_today", screenToday).put("shizuku_ready", shizukuReady()).toString()
+            .put("screen_on_seconds_today", screenToday)
+            .put("screen_interactive", if (screenInteractive == null) JSONObject.NULL else screenInteractive)
+            .put("shizuku_ready", ready)
+            .put("foreground_debug", foregroundDebug)
+            .toString()
         return CommandOutcome.Ok(output)
     }
+
+    /** Reads whether the screen is currently on. Returns null when the state
+     *  cannot be determined, so the caller never treats unknown as on. */
+    private fun screenInteractiveState(): Boolean? = try {
+        val power = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        power.isInteractive
+    } catch (_: Exception) { null }
 
     private class BatteryState(val level: Int, val charging: Boolean)
 
     private fun batteryState(): BatteryState {
-        val battery = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        // BatteryManager reads capacity without a receiver, which some Android 14
+        // builds reject for a null-receiver registration.
+        val manager = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+        val capacity = manager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+        val charging = try { manager?.isCharging ?: false } catch (_: Exception) { false }
+        if (capacity in 0..100) return BatteryState(capacity, charging)
+        val battery = try {
+            context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        } catch (_: Exception) { null }
         val rawLevel = battery?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = battery?.getIntExtra(BatteryManager.EXTRA_SCALE, 100) ?: 100
         val level = if (rawLevel >= 0 && scale > 0) rawLevel * 100 / scale else -1
-        val charging = (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
-        return BatteryState(level, charging)
+        val plugged = (battery?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        return BatteryState(level, charging || plugged)
     }
 
-    private fun foregroundPackageOnly(): String {
-        val dump = (shell("dumpsys activity activities | grep -E 'mResumedActivity|mCurrentFocus' | head -2") as? CommandOutcome.Ok)?.output ?: return ""
-        return PACKAGE_REGEX.find(dump)?.value.orEmpty()
+    private fun foregroundPackageOnly(): String = foregroundProbe().first
+
+    /**
+     * Foreground package plus a diagnostic string when it could not be read.
+     *
+     * Android 12+ renamed the resumed-activity field and some OEM builds hide
+     * one dump or the other. Try both dumps, then usage stats, and keep the raw
+     * failure so the server can explain an empty observation.
+     */
+    private fun foregroundProbe(): Pair<String, String> {
+        // Two cheap queries instead of one heavy one: dumpsys activity can take
+        // tens of seconds on a loaded phone, while the window dump is quick.
+        val commands = listOf(
+            "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | head -3",
+            "dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|ResumedActivity' | head -3",
+        )
+        var failure = ""
+        for (command in commands) {
+            when (val outcome = shell(command, 8_000L)) {
+                is CommandOutcome.Fail -> failure = "shell_fail:" + outcome.message
+                is CommandOutcome.Ok ->
+                    PACKAGE_REGEX.find(outcome.output)?.value?.let { return it to "" }
+            }
+        }
+        val fallback = foregroundFromUsageStats()
+        if (fallback.isNotBlank()) return fallback to "usage_stats"
+        return "" to failure.ifBlank { "empty:no_package" }
+    }
+
+    /** Last app seen moving to the foreground within the usage window. */
+    private fun foregroundFromUsageStats(): String {
+        if (!hasUsageAccess()) return ""
+        return try {
+            val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+            val now = System.currentTimeMillis()
+            val events = manager.queryEvents(now - 10 * 60_000L, now)
+            val event = android.app.usage.UsageEvents.Event()
+            var last = ""
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                if (event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                    last = event.packageName.orEmpty()
+                }
+            }
+            PACKAGE_REGEX.find(last)?.value.orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     private fun screenText(): CommandOutcome {
@@ -369,7 +485,7 @@ class ShizukuCommandExecutor(private val context: Context) {
         return stats.values.sumOf { it.totalTimeInForeground } / 1000
     }
 
-    private fun hasUsageAccess(): Boolean {
+    fun hasUsageAccess(): Boolean {
         val ops = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         return ops.checkOpNoThrow(
             AppOpsManager.OPSTR_GET_USAGE_STATS,

@@ -20,12 +20,9 @@ import java.net.URI
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSettings, onDismiss: () -> Unit) {
-    var serverUrl by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(settings.serverUrl)) }
     var pluginUrl by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(settings.pluginUrl)) }
     var relayUrl by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(settings.relayUrl)) }
-    var username by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(settings.chatUsername)) }
     // Credentials deliberately remain only in this composition, never in saved state.
-    var apiKey by remember { mutableStateOf(TextFieldValue()) }
     var pluginToken by remember { mutableStateOf(TextFieldValue()) }
     var sharedToken by remember { mutableStateOf(TextFieldValue()) }
     var relayToken by remember { mutableStateOf(TextFieldValue()) }
@@ -34,11 +31,9 @@ internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSet
     val diagnostics by appState.diagnostics.collectAsState(initial = AppDiagnostics())
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { busy == null })
-    val serverError = connectionAddressError(serverUrl.text)
     val pluginError = connectionAddressError(pluginUrl.text)
     val relayError = connectionAddressError(relayUrl.text)
-    val usernameError = if (username.text.length > 128) "身份名称最多 128 个字符" else null
-    val valid = serverError == null && pluginError == null && relayError == null && usernameError == null
+    val valid = pluginError == null && relayError == null
 
     fun perform(label: String, action: suspend () -> ActionFeedback, afterSuccess: () -> Unit = {}) {
         if (busy != null) return
@@ -59,15 +54,10 @@ internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSet
             Text("服务器连接", style = MaterialTheme.typography.headlineSmall)
             Text("填入你自己的服务地址和连接凭据。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ConnectionDiagnostics(diagnostics)
-            ConnectionAddressField("AstrBot 聊天地址", serverUrl, { serverUrl = it }, serverError, busy == null, "http://服务器:端口")
-            ConnectionAddressField("Phone Agent 插件地址", pluginUrl, { pluginUrl = it }, pluginError, busy == null, "http://服务器:端口")
+            ConnectionAddressField("Phone Agent 插件地址", pluginUrl, { pluginUrl = it }, pluginError, busy == null, "http://服务器:端口/api/plug/astrbot_plugin_phone_agent")
             ConnectionAddressField("Relay 地址 · 可选", relayUrl, { relayUrl = it }, relayError, busy == null, "留空则不使用中继")
-            OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth(), enabled = busy == null, singleLine = true,
-                label = { Text("聊天身份") }, placeholder = { Text("填写你在服务端使用的身份") }, isError = usernameError != null,
-                supportingText = { Text(usernameError ?: "用于关联服务端对话和记忆，须与你的配置一致。") }, shape = RoundedCornerShape(15.dp))
             Text("连接凭据", style = MaterialTheme.typography.titleMedium)
             Text("仅填写需要替换的项；留空保留原凭据。已保存的内容不会回显。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            SecretField("聊天 API Key", apiKey, { apiKey = it }, settings.apiKeyConfigured, busy == null)
             SecretField("插件 Token", pluginToken, { pluginToken = it }, settings.pluginTokenConfigured, busy == null)
             SecretField("手机控制 Token", sharedToken, { sharedToken = it }, settings.sharedTokenConfigured, busy == null)
             SecretField("Relay Token", relayToken, { relayToken = it }, settings.relayTokenConfigured, busy == null)
@@ -75,8 +65,8 @@ internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSet
             if (busy != null) LinearProgressIndicator(Modifier.fillMaxWidth())
             feedback?.let { FeedbackNotice(it) }
             Button(onClick = {
-                perform("保存中", { appState.saveConnectionSettings(ConnectionUpdate(serverUrl = serverUrl.text.trim(), pluginUrl = pluginUrl.text.trim(), relayUrl = relayUrl.text.trim(), chatUsername = username.text.trim(), apiKey = apiKey.text, pluginToken = pluginToken.text, sharedToken = sharedToken.text, relayToken = relayToken.text)) }) {
-                    apiKey = TextFieldValue(); pluginToken = TextFieldValue(); sharedToken = TextFieldValue(); relayToken = TextFieldValue()
+                perform("保存中", { appState.saveConnectionSettings(ConnectionUpdate(serverUrl = "", pluginUrl = pluginUrl.text.trim(), relayUrl = relayUrl.text.trim(), chatUsername = "", apiKey = "", pluginToken = pluginToken.text, sharedToken = sharedToken.text, relayToken = relayToken.text)) }) {
+                    pluginToken = TextFieldValue(); sharedToken = TextFieldValue(); relayToken = TextFieldValue()
                 }
             }, modifier = Modifier.fillMaxWidth(), enabled = valid && busy == null) { Text(if (busy == "保存中") "保存中…" else "保存配置") }
             OutlinedButton(onClick = { perform("测试中", { appState.testConnection() }) }, modifier = Modifier.fillMaxWidth(), enabled = busy == null) { Text(if (busy == "测试中") "测试中…" else "测试已保存的连接") }
@@ -89,7 +79,12 @@ internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSet
 internal fun ConnectionDiagnostics(diagnostics: AppDiagnostics) {
     Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = .06f)) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            Text("插件 · ${if (diagnostics.pluginConnected) "已连接" else "未连接"}    Shizuku · ${if (diagnostics.shizukuReady) "可用" else "未就绪"}", style = MaterialTheme.typography.labelLarge)
+            Text("插件 · ${if (diagnostics.pluginConnected) "已连接" else "未连接"}    Shizuku · ${if (diagnostics.shizukuReady) "可用" else diagnostics.shizukuDetail.ifBlank { "未就绪" }}", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "使用情况访问 · ${if (diagnostics.usageAccess) "已授权" else "未授权（屏幕时间会显示 0）"}",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (diagnostics.usageAccess) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            )
             Text(if (diagnostics.lastSyncAtEpochMs > 0) "最近同步 ${formatActivityTime(diagnostics.lastSyncAtEpochMs)}" else "尚未完成同步", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             diagnostics.error?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         }

@@ -92,7 +92,7 @@ internal fun LifeActivitySheet(appState: AppState, panel: String, onDismiss: () 
                 }
             }
             if (!diagnostics.pluginConnected) item {
-                Text("插件尚未连接；请先到纸笺配置并测试连接。", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                Text("插件尚未连接；请先到「我的 → 服务器连接」配置并测试连接。", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
             }
             if (selected == "reminders") {
                 item {

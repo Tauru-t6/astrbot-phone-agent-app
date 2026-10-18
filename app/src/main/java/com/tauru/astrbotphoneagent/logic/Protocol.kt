@@ -86,7 +86,10 @@ data class DeviceStatusSnapshot(
     val charging: Boolean = false,
     @SerialName("foreground_package") val foregroundPackage: String? = null,
     @SerialName("screen_on_seconds_today") val screenOnSecondsToday: Long = 0,
+    @SerialName("screen_interactive") val screenInteractive: Boolean? = null,
     @SerialName("shizuku_ready") val shizukuReady: Boolean = false,
     @SerialName("app_version") val appVersion: String? = null,
     @SerialName("reported_at") val reportedAtEpochSec: Double? = null,
+    // Raw reason the foreground probe produced nothing; diagnostic only.
+    @SerialName("foreground_debug") val foregroundDebug: String? = null,
 )

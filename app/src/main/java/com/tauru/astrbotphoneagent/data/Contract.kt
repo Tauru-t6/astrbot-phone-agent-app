@@ -52,6 +52,7 @@ data class AgentTask(
     val error: String?,
     val canRetry: Boolean = false,
     val canCancel: Boolean = false,
+    val screenshotResult: ScreenshotResult? = null,  // G3: typed media, not truncated String
 )
 
 data class TimelineItem(
@@ -68,7 +69,10 @@ data class ChatMessage(
     val fromUser: Boolean,
     val text: String,
     val timestampEpochMs: Long,
-    val streaming: Boolean,            // true while tokens are still arriving
+    val streaming: Boolean,
+    val status: ChatMessageStatus = ChatMessageStatus.SUCCEEDED,  // G4: delivery status
+    val error: String? = null,                                    // G4: failure reason
+    val requestId: String? = null,                               // G4: for retry association
 )
 
 data class CompanionProfile(
@@ -114,6 +118,10 @@ data class AppDiagnostics(
     val lastSyncAtEpochMs: Long = 0L,
     val pendingReminderCount: Int = 0,
     val error: String? = null,
+    // "可用" / "未授权" / "服务未运行"; empty when never probed.
+    val shizukuDetail: String = "",
+    // Independent grant; without it the screen-time card always reads 0.
+    val usageAccess: Boolean = false,
 )
 
 data class ActionFeedback(val success: Boolean, val message: String)
@@ -123,6 +131,70 @@ data class AutomationSettings(
     val autoApproveActions: Set<String> = setOf("screenshot"),
     val notificationForwarding: Boolean = false,
 )
+
+// G3: Screenshot result — a typed media attachment, not a truncated String.
+// The executor returns base64 JPEG inside a JSON string; this type lets the
+// UI decode and render it without losing data to take(500).
+data class ScreenshotResult(
+    val format: String = "jpeg",
+    val width: Int = 0,
+    val height: Int = 0,
+    val bytes: Int = 0,
+    val dataBase64: String = "",
+) {
+    val isValid: Boolean get() = dataBase64.isNotEmpty() && bytes > 0
+}
+
+// G1: Autonomy overview — what the App can show in its diagnostics page.
+// Sourced from /app/state's night_guard + device_last_status + features.
+data class NightGuardState(
+    val enabled: Boolean = false,
+    val window: String = "",
+    val inWindow: Boolean = false,
+    val dryRun: Boolean = true,
+    val packages: List<String> = emptyList(),
+    val phase: String = "",
+    val foregroundPackage: String = "",
+    val ownedSuspended: List<String> = emptyList(),
+    val enforcementCount: Int = 0,
+    val lastError: String = "",
+)
+
+data class AutonomyOverview(
+    val nightGuard: NightGuardState = NightGuardState(),
+    val sleepModeActive: Boolean = false,
+    val sleepModeUntil: String? = null,
+    val suspendedPackages: List<String> = emptyList(),
+    val features: Map<String, Boolean> = emptyMap(),
+    val backend: String = "",
+    val care: CareStatus? = null,
+)
+
+// P1-D: read-only care snapshot written by the companion bridge. The app never
+// configures care here; it only shows what the server actually decided.
+data class CareStatus(
+    val autonomyEnabled: Boolean = false,
+    val mode: String = "",
+    val quietHours: String = "",
+    val inQuietHours: Boolean = false,
+    val dailyLimit: Int = 0,
+    val sentToday: Int = 0,
+    val remaining: Int = 0,
+    val evalToday: Int = 0,
+    val lastSentAt: String = "",
+    val lastEvalAt: String = "",
+    val recent: List<CareDecision> = emptyList(),
+)
+
+data class CareDecision(
+    val outcome: String = "",
+    val reason: String = "",
+    val detail: String = "",
+    val atEpochSec: Double = 0.0,
+)
+
+// G4: Chat message delivery status — distinguishes partial output, failure, and cancellation.
+enum class ChatMessageStatus { QUEUED, SENDING, STREAMING, SUCCEEDED, FAILED, CANCELLED }
 
 // ---------- the seam ----------
 
@@ -139,6 +211,8 @@ interface AppState {
     val diagnostics: Flow<AppDiagnostics> get() = flowOf(AppDiagnostics())
     val pendingConfirmation: Flow<AgentTask?> get() = flowOf(null)
     val automationSettings: Flow<AutomationSettings> get() = flowOf(AutomationSettings())
+    // G1: autonomy overview for the diagnostics/autonomy page.
+    val autonomyOverview: Flow<AutonomyOverview> get() = flowOf(AutonomyOverview())
 
     // Intents (suspend, fast-returning; outcomes come through the flows)
     suspend fun sendChat(text: String)

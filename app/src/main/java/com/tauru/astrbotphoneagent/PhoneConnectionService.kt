@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 
@@ -23,8 +24,17 @@ class PhoneConnectionService : Service() {
             .setContentTitle("设备连接服务")
             .setContentText("同步提醒，接收手机操作请求")
             .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true).build()
-        ServiceCompat.startForeground(this, 2100, notification,
-            if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0)
+        try {
+            // A01: startForeground can throw SecurityException on Android 14+
+            // if the connectedDevice type's prerequisite permissions are not
+            // all granted. Catch it so the service does not crash; the caller
+            // should display a visible error rather than pretending connected.
+            ServiceCompat.startForeground(this, 2100, notification,
+                if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0)
+        } catch (e: SecurityException) {
+            Log.w("PhoneConnSvc", "startForeground failed: ${e.message}")
+            stopSelf()
+        }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
     override fun onBind(intent: Intent?): IBinder? = null

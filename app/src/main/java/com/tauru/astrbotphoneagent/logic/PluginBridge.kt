@@ -36,6 +36,11 @@ class PluginBridge(
         val lastSyncAtEpochMs: Long = 0,
         val relayReachable: Boolean = false,
         val lastError: String? = null,
+        // Distinguishes "Shizuku service down" from "permission not granted";
+        // the two need different user actions.
+        val shizukuDetail: String = "",
+        // Usage-access is a separate grant; without it screen time reads 0.
+        val usageAccess: Boolean = false,
     )
 
     @Synchronized fun start() {
@@ -54,6 +59,15 @@ class PluginBridge(
             while (currentCoroutineContext().isActive) {
                 refreshServerState()
                 delay(15_000)
+            }
+        }
+        jobs += scope.launch(Dispatchers.IO) {
+            // Periodic heartbeat: push the local status snapshot to the plugin so
+            // the night guard has a fresh foreground source without polling.
+            delay(10_000) // let the first refreshLocalStatus complete
+            while (currentCoroutineContext().isActive) {
+                postStatusHeartbeat()
+                delay(45_000)
             }
         }
     }
@@ -90,12 +104,19 @@ class PluginBridge(
     private suspend fun registerLoop() {
         while (currentCoroutineContext().isActive) {
             try {
-                val port = _bridgeState.value.serverPort
                 val token = config.sharedToken()
-                if (port > 0 && token.isNotBlank() && config.pluginUrl().isNotBlank() && config.pluginJwt().isNotBlank()) {
-                    val urls = CommandServer.directAddresses().map { "http://$it:$port" }
-                    val registered = urls.isNotEmpty() && client.registerDevice(DeviceIdentity.deviceId(context),
-                        urls.first(), CommandServer.tokenFingerprint(token), urls)
+                if (token.isNotBlank() && config.pluginUrl().isNotBlank() && config.pluginJwt().isNotBlank()) {
+                    // A05: allow registration even when direct URLs are empty
+                    // (pure-relay devices). The plugin's heartbeat route accepts
+                    // a device without direct endpoints; transport reachability
+                    // is modeled separately.
+                    val port = _bridgeState.value.serverPort
+                    val urls = if (port > 0) {
+                        CommandServer.directAddresses().map { "http://$it:$port" }
+                    } else emptyList()
+                    val baseUrl = urls.firstOrNull() ?: ""
+                    val registered = client.registerDevice(DeviceIdentity.deviceId(context),
+                        baseUrl, CommandServer.tokenFingerprint(token), urls)
                     _bridgeState.update { it.copy(registered = registered) }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -133,20 +154,55 @@ class PluginBridge(
     }
 
     private suspend fun refreshLocalStatus() = withContext(Dispatchers.IO) {
-        try {
+        // Read the permission state before the shell call: a failing command
+        // must not leave the UI stuck on a stale "Shizuku 未就绪".
+        val ready = executor.shizukuReady()
+        _bridgeState.update {
+            it.copy(
+                shizukuDetail = executor.shizukuDiagnostic(),
+                usageAccess = executor.hasUsageAccess(),
+            )
+        }
+        val json = try {
             val outcome = executor.execute("status", emptyMap())
             val output = (outcome as? ShizukuCommandExecutor.CommandOutcome.Ok)?.output
-            val json = JSONObject(output ?: "{}")
-            _lastStatus.value = DeviceStatusSnapshot(
-                batteryPercent = if (!json.has("battery_percent") || json.isNull("battery_percent")) null else json.optInt("battery_percent"),
-                charging = json.optBoolean("charging"),
-                foregroundPackage = json.optString("foreground_package").takeIf { it.isNotBlank() && it != "null" },
-                screenOnSecondsToday = json.optLong("screen_on_seconds_today"),
-                shizukuReady = executor.shizukuReady(), appVersion = config.appVersion,
-                reportedAtEpochSec = System.currentTimeMillis() / 1000.0,
-            )
-        } catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { /* Keep the last dated snapshot when local capture fails. */ }
+            JSONObject(output ?: "{}")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // A local capture failure still yields an honest, dated snapshot:
+            // unknown fields stay null instead of freezing the old values.
+            JSONObject()
+        }
+        val screenInteractive = when {
+            !json.has("screen_interactive") || json.isNull("screen_interactive") -> null
+            else -> json.optBoolean("screen_interactive")
+        }
+        _lastStatus.value = DeviceStatusSnapshot(
+            batteryPercent = if (!json.has("battery_percent") || json.isNull("battery_percent")) null else json.optInt("battery_percent"),
+            charging = json.optBoolean("charging"),
+            foregroundPackage = json.optString("foreground_package").takeIf { it.isNotBlank() && it != "null" },
+            screenOnSecondsToday = json.optLong("screen_on_seconds_today"),
+            screenInteractive = screenInteractive,
+            shizukuReady = ready, appVersion = config.appVersion,
+            foregroundDebug = json.optString("foreground_debug").takeIf { it.isNotBlank() },
+            reportedAtEpochSec = System.currentTimeMillis() / 1000.0,
+        )
+    }
+
+    private suspend fun postStatusHeartbeat() {
+        val snapshot = _lastStatus.value ?: return
+        if (config.pluginUrl().isBlank() || config.pluginJwt().isBlank()) return
+        try {
+            client.postDeviceStatus(snapshot)
+            _bridgeState.update { it.copy(pluginConnected = true, lastError = null) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // A05: record a real error so the UI and diagnostics can show
+            // heartbeat failure, not a silent no-op.
+            _bridgeState.update { it.copy(lastError = "心跳上传失败：${safeError(error)}") }
+        }
     }
 
     private fun safeError(error: Exception): String = if (error is AstrBotClient.ApiException)

@@ -58,6 +58,30 @@ fun GlassCard(
                 tint.copy(alpha = (opacity + .09f).coerceAtMost(1f)),
                 tint.copy(alpha = opacity),
             )))
+            // Aero-glass reads as glass only with a light source: a diagonal
+            // specular sweep, a bright top rim and a darker bottom edge.
+            drawRect(Brush.linearGradient(
+                0f to Color.White.copy(alpha = if (backdrop.dark) .09f else .20f),
+                .45f to Color.White.copy(alpha = .015f),
+                1f to Color.Transparent,
+                start = Offset(0f, 0f),
+                end = Offset(size.width, size.height * .85f),
+            ))
+            drawRect(Brush.verticalGradient(
+                .52f to Color.Transparent,
+                1f to Color.Black.copy(alpha = if (backdrop.dark) .16f else .06f),
+            ))
+            val rim = borderWidth.toPx().coerceAtLeast(1f)
+            drawLine(
+                brush = Brush.horizontalGradient(listOf(
+                    Color.White.copy(alpha = .02f),
+                    Color.White.copy(alpha = if (backdrop.dark) .30f else .60f),
+                    Color.White.copy(alpha = .02f),
+                )),
+                start = Offset(rim, rim),
+                end = Offset(size.width - rim, rim),
+                strokeWidth = rim,
+            )
         }
         content()
     }

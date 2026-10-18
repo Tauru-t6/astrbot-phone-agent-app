@@ -45,7 +45,8 @@ class LogicConfig(private val context: Context) {
         const val DEFAULT_SHARED_TOKEN = ""
         val DEFAULT_USERNAME = ""
         const val DEFAULT_SESSION = "phone_app"
-        const val APP_VERSION = "0.2.0"
+        // App version comes from BuildConfig.VERSION_NAME; the stale hardcoded
+        // constant was removed to avoid drift between Gradle and the config.
         // The dashboard token is intentionally provisioned after installation.
         const val DEFAULT_DASHBOARD_JWT = ""
         // The OpenAPI key is intentionally provisioned after installation.

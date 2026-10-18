@@ -1,8 +1,11 @@
 package com.tauru.astrbotphoneagent.ui
 
 import android.app.Activity
+import android.graphics.BitmapFactory
 import android.os.Build
+import android.util.Base64
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
@@ -11,19 +14,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.ChatBubble
-import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.LocalView
@@ -32,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import com.tauru.astrbotphoneagent.data.AppState
+import com.tauru.astrbotphoneagent.data.TaskStatus
 import com.tauru.astrbotphoneagent.ui.components.BackdropMood
 import com.tauru.astrbotphoneagent.ui.components.GlassCard
 import com.tauru.astrbotphoneagent.ui.components.WaterWaveBackground
@@ -41,11 +47,9 @@ import kotlinx.coroutines.launch
 
 private data class Tab(val label: String, val icon: ImageVector)
 private val tabs = listOf(
-    Tab("聊天", Icons.Filled.ChatBubble),
-    Tab("发现", Icons.Filled.Explore),
+    Tab("动态", Icons.Filled.History),
     Tab("生活", Icons.Filled.GridView),
-    Tab("市集", Icons.Filled.Storefront),
-    Tab("纸笺", Icons.AutoMirrored.Filled.Article),
+    Tab("我的", Icons.AutoMirrored.Filled.Article),
 )
 
 @Composable
@@ -54,8 +58,12 @@ fun AppRoot(appState: AppState) {
 }
 
 @Composable
-internal fun PhoneAgentContent(appState: AppState, initialTab: Int = 2) {
+internal fun PhoneAgentContent(appState: AppState, initialTab: Int = 1) {
     var selected by rememberSaveable { mutableIntStateOf(initialTab) }
+    // R03/v4 §5: hold one saveable slot per tab. Without this, `when (selected)`
+    // removes the screen from composition and its rememberSaveable values are
+    // forgotten, so an unsent chat draft was lost on every tab switch.
+    val tabStates = rememberSaveableStateHolder()
     val scope = rememberCoroutineScope()
     val dark = MaterialTheme.colorScheme.background.luminance() < .3f
     val view = LocalView.current
@@ -80,9 +88,10 @@ internal fun PhoneAgentContent(appState: AppState, initialTab: Int = 2) {
         derivedStateOf { ime.getBottom(density) > 0 }
     }
     val pendingConfirmation by appState.pendingConfirmation.collectAsState(initial = null)
+    val tasks by appState.tasks.collectAsState(initial = emptyList())
     val mood = when (selected) {
-        4 -> BackdropMood.Paper
-        1, 3 -> BackdropMood.Mist
+        2 -> BackdropMood.Paper
+        0 -> BackdropMood.Mist
         else -> BackdropMood.Water
     }
     WaterWaveBackground(mood) {
@@ -136,17 +145,24 @@ internal fun PhoneAgentContent(appState: AppState, initialTab: Int = 2) {
             },
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
-                when (selected) {
-                    0 -> ChatScreen(appState)
-                    1 -> TimelineScreen(appState, onOpenChat = { selected = 0 })
-                    2 -> HomeScreen(appState,
-                        onQuickAction = { id -> scope.launch { appState.runQuickAction(id) } },
-                        onOpenChat = { selected = 0 })
-                    3 -> MarketScreen(appState)
-                    else -> SettingsScreen(appState)
+                tabStates.SaveableStateProvider(selected) {
+                    when (selected) {
+                        0 -> TimelineScreen(appState)
+                        1 -> HomeScreen(appState,
+                            onQuickAction = { id -> scope.launch { appState.runQuickAction(id) } })
+                        else -> SettingsScreen(appState)
+                    }
                 }
             }
         }
+        // 截图快捷操作：GLM 已交付 AgentTask.screenshotResult（类型化附件，不截断）。
+        // 任务成功后若携带截图则弹出预览。本地快捷截图路径没有上传/投递回执，
+        // 本对话框只承诺「已取得」，不声称已发送到聊天。
+        tasks.firstOrNull { it.status == TaskStatus.SUCCESS && it.screenshotResult?.isValid == true }
+            ?.let { task ->
+                var dismissed by rememberSaveable(task.id) { mutableStateOf(false) }
+                if (!dismissed) ScreenshotPreviewDialog(task.title, task.screenshotResult!!) { dismissed = true }
+            }
         pendingConfirmation?.let { task ->
             var submitting by remember(task.id) { mutableStateOf(false) }
             var confirmationError by remember(task.id) { mutableStateOf<String?>(null) }
@@ -178,4 +194,54 @@ internal fun PhoneAgentContent(appState: AppState, initialTab: Int = 2) {
             )
         }
     }
+}
+
+/**
+ * 截图预览：从 AgentTask.screenshotResult 解码并渲染。
+ * 只承诺「截图已取得」。本地快捷截图路径没有上传/投递回执，
+ * 不能声称已发送到聊天；附件上传契约（media_id / delivery_status）尚未由 GLM 交付。
+ * internal 供 TimelineScreen 的任务详情重开复用。
+ */
+@Composable
+internal fun ScreenshotPreviewDialog(
+    title: String,
+    result: com.tauru.astrbotphoneagent.data.ScreenshotResult,
+    onDismiss: () -> Unit,
+) {
+    val bitmap = remember(result) {
+        runCatching {
+            val bytes = Base64.decode(result.dataBase64, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }.getOrNull()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "刚截取的屏幕画面",
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                        contentScale = ContentScale.Fit,
+                    )
+                    Text(
+                        "原始尺寸 ${result.width}×${result.height} · 截图已取得",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text("截图数据无法解析或已过期。", color = MaterialTheme.colorScheme.error)
+                }
+                Text(
+                    "发送到聊天需要服务端投递回执，当前版本无法确认；保存到系统相册暂未支持。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }

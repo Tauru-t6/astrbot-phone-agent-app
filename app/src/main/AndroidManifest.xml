@@ -5,6 +5,9 @@
     <!-- Logic layer: command endpoint + AstrBot OpenAPI + relay polling -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- A01: CHANGE_NETWORK_STATE is a prerequisite for the connectedDevice
+         foreground service type on Android 14 (targetSdk 34). -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

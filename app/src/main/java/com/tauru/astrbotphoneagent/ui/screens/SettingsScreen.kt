@@ -83,7 +83,7 @@ fun SettingsScreen(appState: AppState) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 22.dp).padding(top = 18.dp, bottom = 24.dp),
     ) {
-        Text("纸笺", style = MaterialTheme.typography.displayLarge, color = colors.onBackground)
+        Text("我的", style = MaterialTheme.typography.displayLarge, color = colors.onBackground)
         Text(
             "把重要的连接，妥帖收藏。",
             modifier = Modifier.padding(top = 6.dp, bottom = 25.dp),
@@ -169,6 +169,13 @@ fun SettingsScreen(appState: AppState) {
                 onClick = { panel = "automation" },
             )
             PaperInfoRow(
+                icon = Icons.Outlined.LockPerson,
+                title = "自主功能",
+                detail = "主动关怀、任务授权与自主任务的真实能力与诊断。",
+                state = "查看 ›",
+                onClick = { panel = "autonomy" },
+            )
+            PaperInfoRow(
                 icon = Icons.Outlined.Person,
                 title = "名字与头像",
                 detail = "选择本地头像，设置聊天中的显示名称。",
@@ -195,6 +202,7 @@ fun SettingsScreen(appState: AppState) {
         "tasks" -> LifeActivitySheet(appState, "tasks") { panel = null }
         "profile" -> companion?.let { ProfileSettingsSheet(appState, it) { panel = null } }
         "automation" -> AutomationSettingsSheet(appState) { panel = null }
+        "autonomy" -> AutonomySheet(appState) { panel = null }
     }
 }
 

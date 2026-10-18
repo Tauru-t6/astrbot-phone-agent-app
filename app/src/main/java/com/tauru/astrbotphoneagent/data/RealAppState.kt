@@ -45,6 +45,8 @@ class RealAppState(context: Context) : AppState {
     override val pendingConfirmation = _pendingConfirmation.asStateFlow()
     private val _automation = MutableStateFlow(AutomationSettings())
     override val automationSettings = _automation.asStateFlow()
+    private val _autonomyOverview = MutableStateFlow(AutonomyOverview())
+    override val autonomyOverview = _autonomyOverview.asStateFlow()
     private val confirmations = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
     private val taskJobs = ConcurrentHashMap<String, Job>()
     private val actionIds = ConcurrentHashMap<String, String>()
@@ -103,21 +105,39 @@ class RealAppState(context: Context) : AppState {
         }
     }
 
+    /** Human-readable app name for a package; null when it cannot be resolved. */
+    private fun appLabel(packageName: String?): String? {
+        val packageId = packageName?.takeIf { it.isNotBlank() } ?: return null
+        return runCatching {
+            val info = appContext.packageManager.getApplicationInfo(packageId, 0)
+            appContext.packageManager.getApplicationLabel(info).toString().takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
+
     private suspend fun collectDeviceStatus() {
         combine(bridge.lastStatus, bridge.bridgeState, _reminders) { snapshot, connection, reminders ->
-            _diagnostics.value = AppDiagnostics(connection.pluginConnected, snapshot?.shizukuReady == true,
-                connection.lastSyncAtEpochMs, reminders.size, connection.lastError)
+            _diagnostics.value = AppDiagnostics(
+                pluginConnected = connection.pluginConnected,
+                shizukuReady = snapshot?.shizukuReady == true,
+                lastSyncAtEpochMs = connection.lastSyncAtEpochMs,
+                pendingReminderCount = reminders.size,
+                error = connection.lastError,
+                shizukuDetail = connection.shizukuDetail,
+                usageAccess = connection.usageAccess,
+            )
             _deviceStatus.value = DeviceStatus(
-                // Registration is only an advertisement, never proof of a working direct route.
+                // Reaching /app/state is a working server route, so the UI can
+                // say "direct online"; it is not proof the server can reach the
+                // phone back, which command results still verify per call.
                 connection = when {
                     connection.relayReachable -> ConnectionState.ONLINE_RELAY
-                    connection.pluginConnected -> ConnectionState.UNKNOWN
+                    connection.pluginConnected -> ConnectionState.ONLINE_DIRECT
                     connection.lastError != null -> ConnectionState.OFFLINE
                     else -> ConnectionState.UNKNOWN
                 },
                 batteryPercent = snapshot?.batteryPercent,
                 charging = snapshot?.charging ?: false,
-                foregroundAppLabel = snapshot?.foregroundPackage,
+                foregroundAppLabel = appLabel(snapshot?.foregroundPackage),
                 foregroundAppPackage = snapshot?.foregroundPackage,
                 screenOnSecondsToday = snapshot?.screenOnSecondsToday ?: 0,
                 updatedAtEpochMs = ((snapshot?.reportedAtEpochSec ?: 0.0) * 1000).toLong(),
@@ -140,6 +160,71 @@ class RealAppState(context: Context) : AppState {
                         time, time, null, item.textOrNull("error")))
                 }
             }
+            // G1/G2: parse night_guard + sleep_mode + features into AutonomyOverview.
+            val ng = state.optJSONObject("night_guard")
+            val sleepMode = state.optJSONObject("sleep_mode")
+            val features = state.optJSONObject("features")
+            val firstUserState = ng?.optJSONObject("states")?.let { users ->
+                users.keys().asSequence().mapNotNull { uid -> users.optJSONObject(uid) }.firstOrNull()
+            }
+            // P1-D: read-only care snapshot from the companion bridge.
+            val careJson = state.optJSONObject("care")?.takeIf { it.length() > 0 }
+            val careUser = careJson?.optJSONObject("users")?.let { users ->
+                users.keys().asSequence().firstOrNull()?.let { users.optJSONObject(it) }
+            }
+            val care = careJson?.let { json ->
+                CareStatus(
+                    autonomyEnabled = json.optBoolean("autonomy_enabled", false),
+                    mode = json.optString("mode", ""),
+                    quietHours = json.optString("quiet_hours", ""),
+                    inQuietHours = json.optBoolean("in_quiet_hours", false),
+                    dailyLimit = json.optInt("daily_limit", 0),
+                    sentToday = careUser?.optInt("sent_today", 0) ?: 0,
+                    remaining = careUser?.optInt("remaining", 0) ?: 0,
+                    evalToday = careUser?.optInt("eval_today", 0) ?: 0,
+                    lastSentAt = careUser?.optString("last_sent_at", "").orEmpty(),
+                    lastEvalAt = careUser?.optString("last_eval_at", "").orEmpty(),
+                    recent = careUser?.optJSONArray("recent")?.let { arr ->
+                        (0 until arr.length()).mapNotNull { index -> arr.optJSONObject(index) }
+                            .map { item ->
+                                CareDecision(
+                                    outcome = item.optString("outcome", ""),
+                                    reason = item.optString("reason", ""),
+                                    detail = item.optString("detail", ""),
+                                    atEpochSec = item.optDouble("at", 0.0),
+                                )
+                            }.reversed()
+                    } ?: emptyList(),
+                )
+            }
+            _autonomyOverview.value = AutonomyOverview(
+                nightGuard = NightGuardState(
+                    enabled = ng?.optBoolean("enabled", false) ?: false,
+                    window = ng?.optString("window", "") ?: "",
+                    inWindow = ng?.optBoolean("in_window", false) ?: false,
+                    dryRun = ng?.optBoolean("dry_run", true) ?: true,
+                    packages = ng?.optJSONArray("packages")?.let { arr ->
+                        (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+                    } ?: emptyList(),
+                    phase = firstUserState?.optString("phase", "") ?: "",
+                    foregroundPackage = firstUserState?.optString("foreground_package", "") ?: "",
+                    ownedSuspended = firstUserState?.optJSONArray("owned_suspended")?.let { arr ->
+                        (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+                    } ?: emptyList(),
+                    enforcementCount = firstUserState?.optInt("enforcement_count", 0) ?: 0,
+                    lastError = firstUserState?.optString("last_error", "") ?: "",
+                ),
+                sleepModeActive = sleepMode?.optBoolean("manual_active", false) ?: false,
+                sleepModeUntil = if (sleepMode?.isNull("until") == false) sleepMode.optString("until") else null,
+                suspendedPackages = sleepMode?.optJSONArray("suspended")?.let { arr ->
+                    (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
+                } ?: emptyList(),
+                features = features?.let { f ->
+                    f.keys().asSequence().associate { key -> key to f.optBoolean(key) }
+                } ?: emptyMap(),
+                backend = state.optString("backend", ""),
+                care = care,
+            )
             // Both a due event and an explicit notify bit are required. Old history never alerts.
             val serverNow = state.optDouble("server_time", System.currentTimeMillis() / 1000.0)
             for (item in remote) {
@@ -161,8 +246,10 @@ class RealAppState(context: Context) : AppState {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         val replyId = "m-${UUID.randomUUID()}"
-        _chat.update { (it + ChatMessage("m-${UUID.randomUUID()}", true, trimmed, now(), false) +
-            ChatMessage(replyId, false, "", now(), true)).takeLast(300) }
+        _chat.update { (it + ChatMessage("m-${UUID.randomUUID()}", true, trimmed, now(), false,
+            status = ChatMessageStatus.SUCCEEDED) +
+            ChatMessage(replyId, false, "", now(), true, status = ChatMessageStatus.STREAMING,
+                requestId = replyId)).takeLast(300) }
         requestPersist()
         var accumulated = StringBuilder()
         var complete = false
@@ -179,22 +266,27 @@ class RealAppState(context: Context) : AppState {
                     is AstrBotClient.ChatStreamEvent.Complete -> {
                         complete = true
                         accumulated = StringBuilder(event.text)
-                        replaceChatMessage(replyId, event.text, false)
+                        replaceChatMessage(replyId, event.text, false, status = ChatMessageStatus.SUCCEEDED)
                         appendTimeline(TimelineItemType.AI_MESSAGE, event.text.take(60).ifBlank { "助手回复" }, event.text)
                     }
                     is AstrBotClient.ChatStreamEvent.Failed -> {
-                        replaceChatMessage(replyId, accumulated.toString().ifBlank { "（${event.message}）" }, false)
+                        replaceChatMessage(replyId, accumulated.toString().ifBlank { "（${event.message}）" }, false,
+                            status = ChatMessageStatus.FAILED, error = event.message)
                     }
                 }
             }
         } catch (cancelled: CancellationException) {
-            replaceChatMessage(replyId, accumulated.toString().ifBlank { "（回复已中断）" }, false)
+            replaceChatMessage(replyId, accumulated.toString().ifBlank { "（回复已中断）" }, false,
+                status = ChatMessageStatus.CANCELLED, error = "回复已中断")
             throw cancelled
         } catch (error: Exception) {
-            replaceChatMessage(replyId, accumulated.toString().ifBlank { "（${safeError(error)}）" }, false)
+            replaceChatMessage(replyId, accumulated.toString().ifBlank { "（${safeError(error)}）" }, false,
+                status = ChatMessageStatus.FAILED, error = safeError(error))
         } finally {
             _chat.update { messages -> messages.map { if (it.id == replyId && it.streaming)
-                it.copy(text = it.text.ifBlank { if (complete) "（空回复）" else "（连接中断，请重试）" }, streaming = false) else it } }
+                it.copy(text = it.text.ifBlank { if (complete) "（空回复）" else "（连接中断，请重试）" },
+                    streaming = false,
+                    status = if (complete) ChatMessageStatus.SUCCEEDED else it.status) else it } }
             requestPersist()
         }
     }
@@ -326,15 +418,41 @@ class RealAppState(context: Context) : AppState {
             result.errorCode in setOf("cancelled", "denied") -> TaskStatus.CANCELLED
             else -> TaskStatus.FAILED
         }
+        // G3: parse screenshot output as a typed ScreenshotResult instead of
+        // truncating base64 data to 500 chars. For non-screenshot actions,
+        // keep the short summary but use a larger limit to avoid losing
+        // screen_text / usage_stats output.
+        val screenshot = if (result.success && command.action == "screenshot") {
+            parseScreenshotResult(result.output)
+        } else null
+        val summary = if (result.success) {
+            if (screenshot != null) "截图 ${screenshot.width}×${screenshot.height}"
+            else result.output?.take(2000) ?: "已完成"
+        } else null
         val task = (existing ?: AgentTask(command.commandId, commandTitle(command.action), TaskStatus.RUNNING,
             (command.createdAtEpochSec * 1000).toLong(), null, null, null)).copy(status = status,
             finishedAtEpochMs = (result.finishedAtEpochSec * 1000).toLong(),
-            resultSummary = if (result.success) result.output?.take(500) ?: "已完成" else null,
+            resultSummary = summary,
             error = if (result.success) null else result.error.take(500),
-            canCancel = false, canRetry = !result.success && actionIds.containsKey(command.commandId))
+            canCancel = false, canRetry = !result.success && actionIds.containsKey(command.commandId),
+            screenshotResult = screenshot)
         upsertTask(task)
         appendTimeline(TimelineItemType.TASK_RESULT, "${task.title} · ${if (result.success) "完成" else if (status == TaskStatus.CANCELLED) "已取消" else "失败"}",
-            task.resultSummary ?: task.error.orEmpty(), task.id)
+            summary ?: task.error.orEmpty(), task.id)
+    }
+
+    private fun parseScreenshotResult(output: String?): ScreenshotResult? {
+        if (output.isNullOrBlank()) return null
+        return try {
+            val json = JSONObject(output)
+            ScreenshotResult(
+                format = json.optString("format", "jpeg"),
+                width = json.optInt("width", 0),
+                height = json.optInt("height", 0),
+                bytes = json.optInt("bytes", 0),
+                dataBase64 = json.optString("data_base64", ""),
+            )
+        } catch (_: Exception) { null }
     }
 
     override suspend fun refreshStatus() { ready.await(); bridge.refreshNow() }
@@ -414,8 +532,17 @@ class RealAppState(context: Context) : AppState {
         requestPersist()
     }
 
-    private fun replaceChatMessage(id: String, text: String, streaming: Boolean) {
-        _chat.update { list -> list.map { if (it.id == id) it.copy(text = text, streaming = streaming) else it } }
+    private fun replaceChatMessage(
+        id: String, text: String, streaming: Boolean,
+        status: ChatMessageStatus? = null, error: String? = null,
+    ) {
+        _chat.update { list -> list.map {
+            if (it.id == id) it.copy(
+                text = text, streaming = streaming,
+                status = status ?: it.status,
+                error = error ?: it.error,
+            ) else it
+        } }
         requestPersist()
     }
 
@@ -494,7 +621,7 @@ class RealAppState(context: Context) : AppState {
     private fun now() = System.currentTimeMillis()
     private fun commandTitle(action: String): String = when (action) {
         "status" -> "查看设备状态"
-        "screenshot" -> "保存截屏"
+        "screenshot" -> "截屏"
         "location" -> "获取位置"
         "open_app" -> "打开应用"
         "close_app" -> "关闭应用"
@@ -511,7 +638,7 @@ class RealAppState(context: Context) : AppState {
     }
     private fun defaultQuickActions() = listOf(
         QuickAction("focus_mode", "专注", "30 分钟不看视频", "self_improvement", false, false),
-        QuickAction("screenshot", "截屏", "保存到系统相册", "screenshot", false, false),
+        QuickAction("screenshot", "截屏", "截取当前屏幕", "screenshot", false, false),
         QuickAction("night_mode", "守夜", "限制受控应用 8 小时", "bedtime", false, false),
         QuickAction("locate", "获取位置", "操作前需要确认", "place", true, false),
         QuickAction("battery", "查看电量", "读取设备状态", "battery_std", false, false),

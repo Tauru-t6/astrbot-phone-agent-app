@@ -1,7 +1,9 @@
 package com.tauru.astrbotphoneagent.logic
 
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -57,22 +59,44 @@ class AstrBotClient(private val config: LogicConfig) {
             .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
 
+        // A04/X00: emit checks trySend result. Terminal events (Complete/Failed)
+        // are retried with a blocking trySend on the OkHttp callback thread when
+        // the buffer is full, so the terminal state is never silently lost.
+        // Non-terminal Piece events are best-effort: a slow consumer may lose
+        // intermediate fragments, but the final Complete carries the full text.
+        fun emit(event: ChatStreamEvent) {
+            val result = trySend(event)
+            if (result.isFailure && !isClosedForSend) {
+                if (event is ChatStreamEvent.Complete || event is ChatStreamEvent.Failed) {
+                    // X00: trySendBlocking is not available on ProducerScope in
+                    // this coroutines version; fall back to a direct channel.send
+                    // which suspends until space is available. Since we're on the
+                    // OkHttp callback thread (not a coroutine), use runBlocking.
+                    try {
+                        kotlinx.coroutines.runBlocking { send(event) }
+                    } catch (_: Exception) {
+                        // Channel already closed; terminal state is lost.
+                    }
+                }
+            }
+        }
+
         val call = client.newCall(request)
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                trySend(ChatStreamEvent.Failed("网络连接失败，请检查服务器地址和网络"))
+                emit(ChatStreamEvent.Failed("网络连接失败，请检查服务器地址和网络"))
                 close()
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (!it.isSuccessful) {
-                        trySend(ChatStreamEvent.Failed(httpError(it.code)))
+                        emit(ChatStreamEvent.Failed(httpError(it.code)))
                         close()
                         return
                     }
                     val source = it.body?.source() ?: run {
-                        trySend(ChatStreamEvent.Failed("empty response body"))
+                        emit(ChatStreamEvent.Failed("empty response body"))
                         close()
                         return
                     }
@@ -87,25 +111,25 @@ class AstrBotClient(private val config: LogicConfig) {
                             when (event.optString("type")) {
                                 "plain" -> {
                                     val piece = event.optString("data")
-                                    if (piece.isNotEmpty()) trySend(ChatStreamEvent.Piece(piece))
+                                    if (piece.isNotEmpty()) emit(ChatStreamEvent.Piece(piece))
                                 }
                                 "complete" -> {
                                     completeText = event.optString("data")
-                                    trySend(ChatStreamEvent.Complete(completeText.orEmpty()))
+                                    emit(ChatStreamEvent.Complete(completeText.orEmpty()))
                                 }
                                 "end" -> {
                                     if (completeText == null) {
-                                        trySend(ChatStreamEvent.Failed("stream ended without a complete event"))
+                                        emit(ChatStreamEvent.Failed("stream ended without a complete event"))
                                     }
                                     break
                                 }
                             }
                         }
                         if (completeText == null && !isClosedForSend) {
-                            trySend(ChatStreamEvent.Failed("stream closed before completion"))
+                            emit(ChatStreamEvent.Failed("stream closed before completion"))
                         }
                     } catch (e: IOException) {
-                        trySend(ChatStreamEvent.Failed("连接中断，请稍后重试"))
+                        emit(ChatStreamEvent.Failed("连接中断，请稍后重试"))
                     } finally {
                         close()
                     }
@@ -113,7 +137,10 @@ class AstrBotClient(private val config: LogicConfig) {
             }
         })
         awaitClose { call.cancel() }
-    }
+    // X00: buffer() takes an Int capacity + overflow strategy, not a Channel
+    // instance. 64 slots with SUSPEND keeps every event (including terminal)
+    // at the cost of back-pressuring the OkHttp reader thread.
+    }.buffer(64, BufferOverflow.SUSPEND)
 
     /** POST plugin/device/register with this phone's direct endpoint. */
     suspend fun registerDevice(deviceId: String, baseUrl: String, tokenFingerprint: String, baseUrls: List<String> = listOf(baseUrl)): Boolean {
@@ -176,6 +203,32 @@ class AstrBotClient(private val config: LogicConfig) {
     /** App API: forward notifications captured on the phone to the plugin. */
     suspend fun postNotifications(entries: List<JSONObject>): JSONObject =
         pluginRequest("/app/notifications", JSONObject().put("notifications", org.json.JSONArray(entries)))
+
+    /** Periodic device-status heartbeat for the night guard foreground source. */
+    suspend fun postDeviceStatus(snapshot: DeviceStatusSnapshot): JSONObject {
+        val url = config.pluginUrl().trimEnd('/') + "/device/status"
+        val payload = JSONObject()
+            .put("device_id", DeviceIdentity.deviceId())
+            .put("app_version", snapshot.appVersion ?: "")
+            .put("battery_percent", snapshot.batteryPercent ?: JSONObject.NULL)
+            .put("charging", snapshot.charging)
+            .put("foreground_package", snapshot.foregroundPackage ?: "")
+            .put("screen_on_seconds_today", snapshot.screenOnSecondsToday)
+            .put("screen_interactive", snapshot.screenInteractive ?: JSONObject.NULL)
+            .put("shizuku_ready", snapshot.shizukuReady)
+            .put("foreground_debug", snapshot.foregroundDebug ?: "")
+            .put("reported_at", snapshot.reportedAtEpochSec ?: (System.currentTimeMillis() / 1000.0))
+            .toString()
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer ${config.pluginJwt()}")
+            .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .build()
+        val body = executeForBody(request) ?: throw ApiException("服务器返回了空响应")
+        // The heartbeat is best-effort: a non-success response updates connection
+        // state but does not throw, so the local status loop stays uninterrupted.
+        return body
+    }
 
     private suspend fun pluginRequest(path: String, payload: JSONObject? = null): JSONObject {
         val pluginUrl = config.pluginUrl()

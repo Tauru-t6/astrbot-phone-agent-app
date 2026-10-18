@@ -11,6 +11,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -52,19 +53,40 @@ private val ACTION_LABELS = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun AutomationSettingsSheet(appState: AppState, onDismiss: () -> Unit) {
-    val current by appState.automationSettings.collectAsState(initial = AutomationSettings())
-    var local by remember(current) { mutableStateOf(current) }
+    // committed：业务层权威值；draft：本地编辑。保存中锁定冲突操作；
+    // 保存失败回滚草稿，不能让开着的 UI 冒充已保存。
+    val committed by appState.automationSettings.collectAsState(initial = AutomationSettings())
+    var draft by remember(committed) { mutableStateOf(committed) }
+    var saving by remember { mutableStateOf(false) }
     var feedback by remember { mutableStateOf<ActionFeedback?>(null) }
     val scope = rememberCoroutineScope()
 
     fun persist(next: AutomationSettings) {
-        local = next
-        scope.launch { feedback = appState.saveAutomationSettings(next) }
+        if (saving) return
+        val previous = draft
+        draft = next
+        saving = true
+        feedback = null
+        scope.launch {
+            try {
+                val result = appState.saveAutomationSettings(next)
+                if (!result.success) draft = previous
+                feedback = result
+            } finally {
+                saving = false
+            }
+        }
     }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        // 保存中禁止下滑/返回关闭：onDismissRequest 门禁 + sheetState 拒绝 Hidden 迁移。
+        onDismissRequest = { if (!saving) onDismiss() },
+        sheetState = rememberModalBottomSheetState(
+            skipPartiallyExpanded = true,
+            confirmValueChange = { value ->
+                !(saving && value == SheetValue.Hidden)
+            },
+        ),
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
         Column(
@@ -79,20 +101,28 @@ internal fun AutomationSettingsSheet(appState: AppState, onDismiss: () -> Unit) 
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             feedback?.let { FeedbackNotice(it) }
+            if (saving) {
+                Text(
+                    "正在保存…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             HorizontalDivider()
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("转发手机通知", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "把收到的通知同步给 AstrBot，需要单独授予通知读取权限。",
+                        "把收到的通知同步给 AstrBot。开关打开不等于可用：还需授予通知读取权限（见权限管理），并由服务器开启通知工具。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Switch(
-                    checked = local.notificationForwarding,
-                    onCheckedChange = { persist(local.copy(notificationForwarding = it)) },
+                    checked = draft.notificationForwarding,
+                    enabled = !saving,
+                    onCheckedChange = { persist(draft.copy(notificationForwarding = it)) },
                 )
             }
 
@@ -115,11 +145,12 @@ internal fun AutomationSettingsSheet(appState: AppState, onDismiss: () -> Unit) 
                         )
                     }
                     Switch(
-                        checked = key in local.autoApproveActions,
+                        checked = key in draft.autoApproveActions,
+                        enabled = !saving,
                         onCheckedChange = { checked ->
-                            val next = if (checked) local.autoApproveActions + key
-                            else local.autoApproveActions - key
-                            persist(local.copy(autoApproveActions = next))
+                            val next = if (checked) draft.autoApproveActions + key
+                            else draft.autoApproveActions - key
+                            persist(draft.copy(autoApproveActions = next))
                         },
                     )
                 }

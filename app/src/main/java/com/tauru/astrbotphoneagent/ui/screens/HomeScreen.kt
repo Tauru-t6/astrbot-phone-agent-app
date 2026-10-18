@@ -69,7 +69,6 @@ import kotlin.math.min
 fun HomeScreen(
     appState: AppState,
     onQuickAction: (String) -> Unit,
-    onOpenChat: () -> Unit = {},
 ) {
     val status by appState.deviceStatus.collectAsState(initial = null)
     val actions by appState.quickActions.collectAsState(initial = emptyList())
@@ -88,7 +87,6 @@ fun HomeScreen(
         LifeActivityEntrances(tasks.size, reminders.size) { activityPanel = it }
         ScreenTimeHero(status)
         DeviceDetails(status)
-        ChatInvitation(onOpenChat)
         if (actions.isNotEmpty()) {
             QuickActionsSection(actions, onQuickAction)
         }
@@ -325,7 +323,9 @@ private fun DeviceDetails(status: DeviceStatus?) {
         val foreground: @Composable (Modifier) -> Unit = { modifier ->
             CompactInfoCard(
                 label = "正在使用",
-                value = status?.foregroundAppLabel?.takeIf { it.isNotBlank() } ?: "暂无记录",
+                value = status?.foregroundAppLabel?.takeIf { it.isNotBlank() }
+                ?: status?.foregroundAppPackage?.takeIf { it.isNotBlank() }
+                ?: "暂无记录",
                 detail = "前台应用",
                 modifier = modifier,
             ) { ScreenTimeIcon(Modifier.size(26.dp), colors.primary) }
@@ -372,29 +372,6 @@ private fun CompactInfoCard(
             )
             Text(detail, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
         }
-    }
-}
-
-@Composable
-private fun ChatInvitation(onOpenChat: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(22.dp)
-    Row(
-        modifier = Modifier.fillMaxWidth()
-            .clip(shape)
-            .background(colors.primary.copy(alpha = 0.11f))
-            .border(1.dp, colors.primary.copy(alpha = 0.12f), shape)
-            .clickable(onClick = onOpenChat)
-            .padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Icon(Icons.AutoMirrored.Outlined.Chat, null, tint = colors.primary, modifier = Modifier.size(22.dp))
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text("和搭子聊聊", style = MaterialTheme.typography.titleSmall, color = colors.onSurface)
-            Text("今天过得怎么样？", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-        }
-        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = colors.primary, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -472,6 +449,13 @@ private fun QuickActionCard(action: QuickAction, modifier: Modifier, onClick: ()
                     text = if (action.dangerous) "需要确认" else action.subtitle,
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.onSurfaceVariant,
+                )
+                // 卡片只表示入口与受理；进度/结果在「我的 → 手机任务记录」查看。
+                // 不提供假进度或本地倒计时。
+                Text(
+                    text = "结果见「我的 → 手机任务记录」",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant.copy(alpha = 0.7f),
                 )
             }
         }
