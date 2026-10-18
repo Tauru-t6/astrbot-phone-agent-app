@@ -1,5 +1,6 @@
 package com.tauru.astrbotphoneagent.ui.components
 
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -36,11 +37,9 @@ fun GlassCard(
         if (backdrop.dark) R.drawable.water_night_frost else R.drawable.water_day_frost,
     )
     var origin by remember { mutableStateOf(Offset.Zero) }
-    val tint = when {
-        backdrop.dark -> Color(0xFF1C303C)
-        backdrop.mood == BackdropMood.Paper -> Color(0xFFFFFCF1)
-        else -> Color(0xFFF0FBFF)
-    }
+    // Follow the active palette (Material You included) instead of a fixed tint,
+    // so the glass keeps its character when the system colour changes.
+    val tint = MaterialTheme.colorScheme.surface
     val opacity = (alpha + if (blur == GlassCardBlur.Heavy) .12f else 0f).coerceIn(0f, 1f)
     Box(
         modifier
