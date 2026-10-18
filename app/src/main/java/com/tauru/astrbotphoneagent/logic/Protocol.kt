@@ -45,7 +45,7 @@ data class ResultEnvelope(
 
 /** Closed command set; must mirror COMMAND_ACTIONS in device_app.py. */
 val COMMAND_ACTIONS: Set<String> = setOf(
-    "status", "open_app", "close_app", "foreground_app", "lock_screen",
+    "status", "quick_status", "open_app", "close_app", "foreground_app", "lock_screen",
     "wake_screen", "home", "back", "screenshot", "screen_text",
     "suspend_app", "unsuspend_app", "suspend_video_apps", "unsuspend_video_apps",
     "location", "usage_stats", "send_notification", "ping",

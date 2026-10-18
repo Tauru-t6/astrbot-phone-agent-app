@@ -59,6 +59,9 @@ class ShizukuCommandExecutor(private val context: Context) {
         }
         if (action == "ping") return CommandOutcome.Ok("""{"pong":true}""")
         if (action == "status") return status()
+        // Task verification needs only the foreground and the screen state; the
+        // full status also aggregates usage stats, which takes ~10 s.
+        if (action == "quick_status") return quickStatus()
         if (!shizukuReady()) {
             return CommandOutcome.Fail("shizuku_unavailable", "Shizuku is not running or permission not granted")
         }
@@ -243,6 +246,32 @@ class ShizukuCommandExecutor(private val context: Context) {
     }
 
     // ---------- read-only inspection ----------
+
+    /** Fast path used by task verification: no usage-stats aggregation. */
+    private fun quickStatus(): CommandOutcome {
+        val ready = try { shizukuReady() } catch (_: Throwable) { false }
+        var foregroundDebug = ""
+        val foreground = try {
+            if (ready) {
+                val probe = foregroundProbe()
+                foregroundDebug = probe.second
+                probe.first
+            } else {
+                foregroundDebug = "shizuku_not_ready"
+                ""
+            }
+        } catch (error: Exception) {
+            foregroundDebug = ("probe_exception:" + (error.message ?: error.javaClass.simpleName)).take(120)
+            ""
+        }
+        val screenInteractive = screenInteractiveState()
+        val output = JSONObject().put("foreground_package", foreground)
+            .put("foreground_debug", foregroundDebug)
+            .put("shizuku_ready", ready)
+            .put("screen_interactive", if (screenInteractive == null) JSONObject.NULL else screenInteractive)
+            .toString()
+        return CommandOutcome.Ok(output)
+    }
 
     private fun status(): CommandOutcome {
         // Each probe is isolated: one failing source must not blank the whole
