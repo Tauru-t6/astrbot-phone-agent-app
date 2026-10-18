@@ -148,7 +148,120 @@ class ShizukuCommandExecutor(private val context: Context) {
 
     // ---------- shell ----------
 
+    /**
+     * One long-lived `sh` behind Shizuku.
+     *
+     * Spawning a remote process costs seconds on this device, and every probe
+     * used to pay it: a foreground check took 12.8 s because it started two
+     * processes. A persistent session turns each command into a write + a read.
+     */
+    private inner class ShellSession {
+        private val process: Process = newProcessArgv(arrayOf("sh"))
+            ?: throw IllegalStateException("shizuku_shell_unavailable")
+        private val writer = java.io.BufferedWriter(java.io.OutputStreamWriter(process.outputStream))
+        private val lines = java.util.concurrent.LinkedBlockingQueue<String>()
+        @Volatile private var closed = false
+
+        init {
+            val reader = Thread {
+                try {
+                    process.inputStream.bufferedReader().forEachLine { line -> lines.put(line) }
+                } catch (_: Exception) {
+                } finally {
+                    closed = true
+                    runCatching { lines.put("__DSH_EOF__") }
+                }
+            }
+            reader.isDaemon = true
+            reader.start()
+        }
+
+        fun run(command: String, timeoutMs: Long): CommandOutcome {
+            if (closed) return CommandOutcome.Fail("shell_closed", "shell 会话已结束")
+            val marker = "DSH_" + java.util.UUID.randomUUID().toString().take(8)
+            return try {
+                synchronized(this) { runLocked(command, marker, timeoutMs) }
+            } catch (error: Exception) {
+                closed = true
+                CommandOutcome.Fail("shell_error", (error.message ?: error.javaClass.simpleName).take(120))
+            }
+        }
+
+        private fun runLocked(command: String, marker: String, timeoutMs: Long): CommandOutcome {
+            writer.write(command + " 2>&1; echo \"__" + marker + ":\$?\"\n")
+            writer.flush()
+            val output = StringBuilder()
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (true) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) return closeWith(CommandOutcome.Fail("timeout", "手机命令执行超时"))
+                val line = lines.poll(left, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    ?: return closeWith(CommandOutcome.Fail("timeout", "手机命令执行超时"))
+                if (line == "__DSH_EOF__") {
+                    closed = true
+                    return CommandOutcome.Fail("shell_closed", "shell 会话已结束")
+                }
+                if (line.startsWith("__" + marker + ":")) {
+                    val code = line.substringAfter(':').trim().toIntOrNull() ?: -1
+                    val text = output.toString().trim()
+                    return if (code == 0) {
+                        CommandOutcome.Ok(text.ifEmpty { "ok" })
+                    } else {
+                        CommandOutcome.Fail("shell_failed", text.take(200))
+                    }
+                }
+                if (output.length < MAX_SHELL_OUTPUT_BYTES) output.appendLine(line)
+            }
+        }
+
+        private fun closeWith(outcome: CommandOutcome): CommandOutcome {
+            closed = true
+            runCatching { process.destroy() }
+            return outcome
+        }
+
+        fun close() {
+            closed = true
+            runCatching { process.destroy() }
+        }
+    }
+
+    private var session: ShellSession? = null
+    private val sessionLock = Any()
+
+    private fun sessionOrNull(): ShellSession? = synchronized(sessionLock) {
+        val current = session
+        if (current != null) return current
+        return try {
+            ShellSession().also { session = it }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun dropSession() {
+        synchronized(sessionLock) {
+            session?.close()
+            session = null
+        }
+    }
+
     private fun shell(command: String, timeoutMs: Long = 25_000L): CommandOutcome {
+        val live = sessionOrNull()
+        if (live != null) {
+            val outcome = live.run(command, timeoutMs)
+            // A broken session falls back to a one-shot process instead of
+            // failing the command outright.
+            if (outcome is CommandOutcome.Ok || (outcome as? CommandOutcome.Fail)?.errorCode != "shell_closed") {
+                if (outcome is CommandOutcome.Fail && outcome.errorCode == "timeout") dropSession()
+                return outcome
+            }
+            dropSession()
+        }
+        return shellOnce(command, timeoutMs)
+    }
+
+    private fun shellOnce(command: String, timeoutMs: Long = 25_000L): CommandOutcome {
         val process = newProcess(command + " 2>&1")
             ?: return CommandOutcome.Fail("shizuku_unavailable", "Shizuku 无法创建命令进程")
         val bytes = ByteArrayOutputStream()
@@ -232,7 +345,10 @@ class ShizukuCommandExecutor(private val context: Context) {
     // access works because the SDK and this app share no package check on the
     // reflective path. R8 keep rules in proguard-rules.pro protect this call.
     // If a future Shizuku release locks this down, migrate to a UserService.
-    private fun newProcess(command: String): Process? = try {
+    private fun newProcess(command: String): Process? = newProcessArgv(arrayOf("sh", "-c", command))
+
+    /** Same reflective call, but with an explicit argv (used for the sh session). */
+    private fun newProcessArgv(argv: Array<String>): Process? = try {
         val method = Shizuku::class.java.getDeclaredMethod(
             "newProcess",
             Array<String>::class.java,
@@ -240,7 +356,7 @@ class ShizukuCommandExecutor(private val context: Context) {
             String::class.java,
         )
         method.isAccessible = true
-        method.invoke(null, arrayOf("sh", "-c", command), null, null) as? Process
+        method.invoke(null, argv, null, null) as? Process
     } catch (_: Exception) {
         null
     }
@@ -344,13 +460,15 @@ class ShizukuCommandExecutor(private val context: Context) {
     private fun foregroundProbe(): Pair<String, String> {
         // Two cheap queries instead of one heavy one: dumpsys activity can take
         // tens of seconds on a loaded phone, while the window dump is quick.
+        // Activity first: the window dump times out on some OEMs (8 s of the
+        // 12.8 s we measured), while the activity grep answers in a few seconds.
         val commands = listOf(
-            "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | head -3",
             "dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|ResumedActivity' | head -3",
+            "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | head -3",
         )
         var failure = ""
         for (command in commands) {
-            when (val outcome = shell(command, 8_000L)) {
+            when (val outcome = shell(command, 3_000L)) {
                 is CommandOutcome.Fail -> failure = "shell_fail:" + outcome.message
                 is CommandOutcome.Ok ->
                     PACKAGE_REGEX.find(outcome.output)?.value?.let { return it to "" }
