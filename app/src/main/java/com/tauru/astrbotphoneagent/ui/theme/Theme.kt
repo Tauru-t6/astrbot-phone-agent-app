@@ -64,7 +64,9 @@ private val AppShapes = Shapes(
 @Composable
 fun PhoneAgentTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    // The teal scheme is the app's identity; wallpaper colours clashed with the
+    // water backdrop, so this stays opt-in (0.3.19).
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
