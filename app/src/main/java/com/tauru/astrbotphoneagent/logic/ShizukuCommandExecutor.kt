@@ -67,13 +67,13 @@ class ShizukuCommandExecutor(private val context: Context) {
         }
         return try {
             when (action) {
-                "open_app" -> shell("monkey -p " + requirePackage(args) + " 1")
-                "close_app" -> shell("am force-stop " + requirePackage(args))
+                "open_app" -> shellOnce("monkey -p " + requirePackage(args) + " 1")
+                "close_app" -> shellOnce("am force-stop " + requirePackage(args))
                 "foreground_app" -> CommandOutcome.Ok("""{"package":"""" + foregroundPackageOnly() + """"}""")
-                "lock_screen" -> shell("input keyevent 223")
-                "wake_screen" -> shell("input keyevent 224")
-                "home" -> shell("input keyevent 3")
-                "back" -> shell("input keyevent 4")
+                "lock_screen" -> shellOnce("input keyevent 223")
+                "wake_screen" -> shellOnce("input keyevent 224")
+                "home" -> shellOnce("input keyevent 3")
+                "back" -> shellOnce("input keyevent 4")
                 "screen_text" -> screenText()
                 "tap" -> tap(args)
                 "long_press" -> longPress(args)
@@ -96,10 +96,9 @@ class ShizukuCommandExecutor(private val context: Context) {
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             throw e
-        } catch (_: Exception) {
-            CommandOutcome.Fail("shell_failed", "手机命令执行失败")
-        }
-    }
+        } catch (e: Exception) {
+            CommandOutcome.Fail("shell_failed", "手机命令执行失败: " + (e.message ?: e.javaClass.simpleName).take(120))
+        }    }
 
     private class CommandException(val errorCode: String, message: String) : Exception(message)
 

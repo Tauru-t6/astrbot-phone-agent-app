@@ -584,7 +584,8 @@ class RealAppState(context: Context) : AppState {
         ready.await()
         if (approvalId.isBlank()) return ActionFeedback(false, "找不到这条待批任务")
         return try {
-            val result = client.approveTask(approvalId)
+            // A stuck device must not leave the sheet showing "执行中" forever.
+            val result = kotlinx.coroutines.withTimeout(30_000) { client.approveTask(approvalId) }
             scope.launch { bridge.refreshServerState() }
             if (result.optBoolean("success")) {
                 val run = result.optJSONObject("run")

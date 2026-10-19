@@ -119,7 +119,7 @@ object ApprovalOverlay {
             }
 
         val allow = actionButton(
-            "允许", Color.parseColor("#5B7CFA"), Color.TRANSPARENT, Color.WHITE,
+            "允许", Color.parseColor("#4A9CC0"), Color.TRANSPARENT, Color.WHITE,
         ) { dismiss(); onApprove() }
         val reject = actionButton(
             "拒绝", Color.TRANSPARENT, Color.parseColor("#33FFFFFF"), Color.parseColor("#C9D3E4"),
@@ -154,7 +154,17 @@ object ApprovalOverlay {
         // thread. Doing it inline threw and the exception was swallowed.
         mainHandler.post {
             try {
+                // Start slightly above and transparent, then settle down: an
+                // instant appear reads like a slide in a presentation.
+                card.alpha = 0f
+                card.translationY = -dp(28).toFloat()
                 windowManager.addView(card, params)
+                card.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(240)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator())
+                    .start()
                 overlay = card
                 shownApproval = approval.approvalId
                 lastError = ""
@@ -167,10 +177,20 @@ object ApprovalOverlay {
 
     fun dismiss() {
         val view = overlay ?: return
-        runCatching {
-            (view.context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager)?.removeView(view)
-        }
         overlay = null
+        val lift = (16 * view.resources.displayMetrics.density).toInt().toFloat()
+        // Animate out before removing so tapping a button does not snap.
+        view.animate()
+            .alpha(0f)
+            .translationY(-lift)
+            .setDuration(140)
+            .setInterpolator(android.view.animation.AccelerateInterpolator())
+            .withEndAction {
+                runCatching {
+                    (view.context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager)?.removeView(view)
+                }
+            }
+            .start()
     }
 }
 
