@@ -136,7 +136,12 @@ class CommandServer(
         fun tokenFingerprint(token: String): String = "sha256:" + MessageDigest.getInstance("SHA-256")
             .digest(token.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }.take(16)
 
-        /** Discover LAN endpoints first, then Tailscale. No deployment addresses in the APK. */
+        /**
+         * Tailscale first, LAN second. The server is usually remote, so a LAN
+         * address is unreachable from it: registering LAN first made every
+         * live probe time out overnight while heartbeats (phone → server)
+         * kept working. No deployment addresses are hardcoded in the APK.
+         */
         fun directAddresses(): List<String> {
             val candidates = runCatching {
                 NetworkInterface.getNetworkInterfaces().asSequence()
@@ -154,8 +159,8 @@ class CommandServer(
                 address.startsWith("192.168.") || address.startsWith("10.") ||
                     (parts.firstOrNull() == "172" && (parts.getOrNull(1)?.toIntOrNull() ?: 0) in 16..31)
             }
-            return (lan + tailscale).distinct()
+            return (tailscale + lan).distinct()
         }
-        fun bestLanAddress(): String? = directAddresses().firstOrNull()
+        fun bestAddress(): String? = directAddresses().firstOrNull()
     }
 }
