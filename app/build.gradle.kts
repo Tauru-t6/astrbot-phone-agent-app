@@ -13,8 +13,8 @@ android {
         applicationId = "com.tauru.astrbotphoneagent"
         minSdk = 26
         targetSdk = 34
-        versionCode = 26
-        versionName = "0.3.23"
+        versionCode = 27
+        versionName = "0.3.24"
     }
 
     buildFeatures {

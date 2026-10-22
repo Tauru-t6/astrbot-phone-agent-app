@@ -580,11 +580,22 @@ class ShizukuCommandExecutor(private val context: Context) {
     // ---------- app policy ----------
 
     private fun suspendOne(pkg: String): CommandOutcome {
+        if (!isInstalled(pkg)) return notInstalled(pkg)
         shell("pm suspend --user 0 " + pkg)
         return verifiedState(pkg, expectedSuspended = true)
     }
 
+    /** A missing package used to surface as "state is false, expected true". */
+    private fun isInstalled(pkg: String): Boolean {
+        val listed = (shell("pm list packages " + pkg) as? CommandOutcome.Ok)?.output.orEmpty()
+        return listed.lineSequence().any { it.trim() == "package:$pkg" }
+    }
+
+    private fun notInstalled(pkg: String): CommandOutcome =
+        CommandOutcome.Fail("not_installed", pkg + " 没有安装在这台手机上")
+
     private fun unsuspendOne(pkg: String): CommandOutcome {
+        if (!isInstalled(pkg)) return notInstalled(pkg)
         shell("pm unsuspend --user 0 " + pkg)
         return verifiedState(pkg, expectedSuspended = false)
     }
