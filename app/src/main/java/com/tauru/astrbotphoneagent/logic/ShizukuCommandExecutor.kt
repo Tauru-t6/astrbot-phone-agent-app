@@ -519,14 +519,30 @@ class ShizukuCommandExecutor(private val context: Context) {
         }
     }
 
+    // Issue #1: uiautomator dump never returns on some devices (Galaxy S10,
+    // Android 12), which outlives the caller's transport budget and ends as a
+    // dropped connection instead of an error. The dump gets its own short
+    // leash (toybox `timeout`, enforced again by the shell timeout), the temp
+    // file is removed first so a stale dump is never read, and the top
+    // activity's dumpsys view hierarchy is the fallback before a distinct
+    // ui_dump_unavailable error is reported.
     private fun screenText(): CommandOutcome {
-        val dumpResult = shell("uiautomator dump --compressed /data/local/tmp/window.xml")
-        if (dumpResult is CommandOutcome.Fail) return dumpResult
-        val xmlResult = shell("cat /data/local/tmp/window.xml")
-        if (xmlResult is CommandOutcome.Fail) return xmlResult
-        val xml = (xmlResult as CommandOutcome.Ok).output
-        val nodes = NODE_TEXT_REGEX.findAll(xml).mapNotNull { it.groupValues.getOrNull(1) }.take(80).toList()
-        return CommandOutcome.Ok(nodes.joinToString("\n"))
+        shell("rm -f " + UI_DUMP_PATH, UI_DUMP_SETUP_TIMEOUT_MS)
+        val dumped = shell("timeout " + UI_DUMP_LEASE_SECONDS + " uiautomator dump --compressed " + UI_DUMP_PATH,
+            UI_DUMP_LEASE_SECONDS * 1000 + 4_000L)
+        if (dumped is CommandOutcome.Ok) {
+            val cat = shell("cat " + UI_DUMP_PATH, UI_DUMP_SETUP_TIMEOUT_MS)
+            shell("rm -f " + UI_DUMP_PATH, UI_DUMP_SETUP_TIMEOUT_MS)
+            if (cat is CommandOutcome.Ok) {
+                return CommandOutcome.Ok(UiTextParser.parse(cat.output).joinToString("\n"))
+            }
+        }
+        val fallback = shell("dumpsys activity top | grep -o 'text=\"[^\"]*\"' | head -100", UI_DUMP_FALLBACK_TIMEOUT_MS)
+        if (fallback is CommandOutcome.Ok) {
+            val nodes = UiTextParser.parse(fallback.output)
+            if (nodes.isNotEmpty()) return CommandOutcome.Ok(nodes.joinToString("\n"))
+        }
+        return CommandOutcome.Fail("ui_dump_unavailable", "无法读取屏幕文本：uiautomator dump 未返回，dumpsys 兜底也没有内容")
     }
 
     // ---------- screenshot ----------
@@ -673,12 +689,18 @@ class ShizukuCommandExecutor(private val context: Context) {
 
     companion object {
         private val PACKAGE_REGEX = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+")
-        private val NODE_TEXT_REGEX = Regex("""text="([^"]{1,120})"""")
         private const val MAX_SHELL_OUTPUT_BYTES = 8_000_000
         private const val MAX_SCREENSHOT_EDGE = 1600
         private const val SCREENSHOT_QUALITY = 75
         private const val MAX_SCREENSHOT_BYTES = 2_200_000
         private const val DEFAULT_DISPLAY_WIDTH = 1080
         private const val DEFAULT_DISPLAY_HEIGHT = 1920
+        private const val UI_DUMP_PATH = "/data/local/tmp/window.xml"
+        // `timeout 8` bounds the dump inside the shell; the session leash adds
+        // 4 s of margin, so screen_text answers well inside the plugin's
+        // 35 s per-attempt transport window even when the dump hangs.
+        private const val UI_DUMP_LEASE_SECONDS = 8
+        private const val UI_DUMP_SETUP_TIMEOUT_MS = 3_000L
+        private const val UI_DUMP_FALLBACK_TIMEOUT_MS = 12_000L
     }
 }

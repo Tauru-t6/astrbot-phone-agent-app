@@ -97,8 +97,8 @@ $env:JAVA_HOME = 'C:\path\to\jdk-17'
 
 正式签名通过环境变量传入：`PHONE_AGENT_KEYSTORE`、`PHONE_AGENT_STORE_PASSWORD`、`PHONE_AGENT_KEY_ALIAS`、`PHONE_AGENT_KEY_PASSWORD`，然后运行 `:app:assembleRelease`。签名私钥不属于公开仓库，也不应上传为 Release 附件。
 
-Compose 预览位于 `app/src/debug/`，只使用预览数据；Release 不包含预览入口。通信单测覆盖中文 HTTP 字节长度、分段读取、非法请求、数字/布尔参数和命令过期校验。
+Compose 预览位于 `app/src/debug/`，只使用预览数据；Release 不包含预览入口。通信单测覆盖中文 HTTP 字节长度、分段读取、非法请求、数字/布尔参数、命令过期校验，以及屏幕文本解析（uiautomator XML 与 dumpsys 兜底共用同一解析器）。
 
 ## 版本状态
 
-`v0.3.6` 在自主功能页加入最近任务列表（试跑与真实执行、每步核验结论）。`v0.3.5` 移除了应用内聊天，接入服务端真实关怀状态，并修复了 Shizuku 远程进程等待导致所有 shell 命令失败的问题。真机后台存活、Shizuku OEM 兼容性及不同系统键盘仍需实际设备验证。
+`v0.3.25` 修复 `screen_text` 在部分设备上必然超时的问题（issue #1，Galaxy S10 / Android 12 上 uiautomator dump 超过 15 秒不返回，超过插件的传输窗口导致连接被断开）：dump 加 `timeout 8` 硬限制和独立 shell 短超时，临时文件先删后写避免读到旧数据，失败时回退到 `dumpsys activity top` 视图层级，两者都拿不到文本时返回 `error_code: ui_dump_unavailable` 而不是挂住连接；服务器 socket 读超时从 15 秒放宽到 60 秒，不再短于应用自身的 25 秒 shell 超时。`v0.3.6` 在自主功能页加入最近任务列表（试跑与真实执行、每步核验结论）。`v0.3.5` 移除了应用内聊天，接入服务端真实关怀状态，并修复了 Shizuku 远程进程等待导致所有 shell 命令失败的问题。真机后台存活、Shizuku OEM 兼容性及不同系统键盘仍需实际设备验证。

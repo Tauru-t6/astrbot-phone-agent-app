@@ -59,7 +59,12 @@ class CommandServer(
 
     private suspend fun handle(client: Socket) {
         client.use { peer ->
-            peer.soTimeout = 15_000
+            // Bounds only the request read; command execution happens between
+            // reads and is bounded by the executor's own timeouts. This must
+            // stay above the shell's longest command (25 s) — it used to be
+            // shorter (issue #1), so a slow device dropped connections before
+            // an error could travel back.
+            peer.soTimeout = 60_000
             val peerAddress = runCatching { peer.inetAddress?.hostAddress.orEmpty() }.getOrDefault("")
             if (rateLimited(peerAddress)) {
                 respond(peer, 429, """{"success":false,"error":"too many requests"}""")
