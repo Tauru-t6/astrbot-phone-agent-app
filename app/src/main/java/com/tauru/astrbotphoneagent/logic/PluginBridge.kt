@@ -164,7 +164,7 @@ class PluginBridge(
             )
         }
         val json = try {
-            val outcome = executor.execute("status", emptyMap())
+            val outcome = runInterruptible { executor.execute("status", emptyMap()) }
             val output = (outcome as? ShizukuCommandExecutor.CommandOutcome.Ok)?.output
             JSONObject(output ?: "{}")
         } catch (cancelled: CancellationException) {

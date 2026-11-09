@@ -55,6 +55,7 @@ import com.tauru.astrbotphoneagent.data.TimelineItem
 import com.tauru.astrbotphoneagent.data.TimelineItemType
 import com.tauru.astrbotphoneagent.ui.ScreenshotPreviewDialog
 import com.tauru.astrbotphoneagent.ui.components.GlassCard
+import com.tauru.astrbotphoneagent.ui.components.PageHeading
 import com.tauru.astrbotphoneagent.ui.components.ProfileAvatar
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -78,14 +79,8 @@ fun TimelineScreen(appState: AppState) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
-            Text("动态", style = MaterialTheme.typography.displayLarge, color = colors.onBackground)
-            Text(
-                "日常里，留下一点回响。",
-                modifier = Modifier.padding(top = 6.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(22.dp))
+            PageHeading("动态", "提醒、任务和日常，都在这里")
+            Spacer(Modifier.height(16.dp))
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

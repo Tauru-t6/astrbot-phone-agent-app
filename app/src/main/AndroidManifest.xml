@@ -30,6 +30,8 @@
         android:icon="@drawable/ic_launcher"
         android:theme="@style/Theme.PhoneAgent"
         android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config">
 

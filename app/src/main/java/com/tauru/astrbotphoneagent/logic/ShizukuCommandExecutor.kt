@@ -154,78 +154,7 @@ class ShizukuCommandExecutor(private val context: Context) {
      * used to pay it: a foreground check took 12.8 s because it started two
      * processes. A persistent session turns each command into a write + a read.
      */
-    private inner class ShellSession {
-        private val process: Process = newProcessArgv(arrayOf("sh"))
-            ?: throw IllegalStateException("shizuku_shell_unavailable")
-        private val writer = java.io.BufferedWriter(java.io.OutputStreamWriter(process.outputStream))
-        private val lines = java.util.concurrent.LinkedBlockingQueue<String>()
-        @Volatile private var closed = false
-
-        init {
-            val reader = Thread {
-                try {
-                    process.inputStream.bufferedReader().forEachLine { line -> lines.put(line) }
-                } catch (_: Exception) {
-                } finally {
-                    closed = true
-                    runCatching { lines.put("__DSH_EOF__") }
-                }
-            }
-            reader.isDaemon = true
-            reader.start()
-        }
-
-        fun run(command: String, timeoutMs: Long): CommandOutcome {
-            if (closed) return CommandOutcome.Fail("shell_closed", "shell 会话已结束")
-            val marker = "DSH_" + java.util.UUID.randomUUID().toString().take(8)
-            return try {
-                synchronized(this) { runLocked(command, marker, timeoutMs) }
-            } catch (error: Exception) {
-                closed = true
-                CommandOutcome.Fail("shell_error", (error.message ?: error.javaClass.simpleName).take(120))
-            }
-        }
-
-        private fun runLocked(command: String, marker: String, timeoutMs: Long): CommandOutcome {
-            writer.write(command + " 2>&1; echo \"__" + marker + ":\$?\"\n")
-            writer.flush()
-            val output = StringBuilder()
-            val deadline = System.currentTimeMillis() + timeoutMs
-            while (true) {
-                val left = deadline - System.currentTimeMillis()
-                if (left <= 0) return closeWith(CommandOutcome.Fail("timeout", "手机命令执行超时"))
-                val line = lines.poll(left, java.util.concurrent.TimeUnit.MILLISECONDS)
-                    ?: return closeWith(CommandOutcome.Fail("timeout", "手机命令执行超时"))
-                if (line == "__DSH_EOF__") {
-                    closed = true
-                    return CommandOutcome.Fail("shell_closed", "shell 会话已结束")
-                }
-                if (line.startsWith("__" + marker + ":")) {
-                    val code = line.substringAfter(':').trim().toIntOrNull() ?: -1
-                    val text = output.toString().trim()
-                    return if (code == 0) {
-                        CommandOutcome.Ok(text.ifEmpty { "ok" })
-                    } else {
-                        CommandOutcome.Fail("shell_failed", text.take(200))
-                    }
-                }
-                if (output.length < MAX_SHELL_OUTPUT_BYTES) output.appendLine(line)
-            }
-        }
-
-        private fun closeWith(outcome: CommandOutcome): CommandOutcome {
-            closed = true
-            runCatching { process.destroy() }
-            return outcome
-        }
-
-        fun close() {
-            closed = true
-            runCatching { process.destroy() }
-        }
-    }
-
-    private var session: ShellSession? = null
+    private var session: ShellCommandSession? = null
     private val sessionLock = Any()
 
     // Diagnostics: is the persistent shell in use, and how long a call took.
@@ -234,11 +163,13 @@ class ShizukuCommandExecutor(private val context: Context) {
 
     private fun sessionMode(): String = if (session != null) "session" else "oneshot"
 
-    private fun sessionOrNull(): ShellSession? = synchronized(sessionLock) {
+    private fun sessionOrNull(): ShellCommandSession? = synchronized(sessionLock) {
         val current = session
-        if (current != null) return current
+        if (current != null && !current.isClosed) return current
         return try {
-            ShellSession().also { session = it; sessionError = "" }
+            val process = newProcessArgv(arrayOf("sh"))
+                ?: throw IllegalStateException("shizuku_shell_unavailable")
+            ShellCommandSession(process, MAX_SHELL_OUTPUT_BYTES).also { session = it; sessionError = "" }
         } catch (error: Throwable) {
             // Surfaced through foreground_debug so the heartbeat carries it.
             sessionError = (error.javaClass.simpleName + ": " + (error.message ?: "")).take(90)
@@ -246,29 +177,31 @@ class ShizukuCommandExecutor(private val context: Context) {
         }
     }
 
-    private fun dropSession() {
+    private fun dropSession(expected: ShellCommandSession) {
         synchronized(sessionLock) {
-            session?.close()
-            session = null
+            expected.close()
+            if (session === expected) session = null
         }
     }
 
     private fun shell(command: String, timeoutMs: Long = 25_000L): CommandOutcome {
-        val started = System.currentTimeMillis()
-        val live = sessionOrNull()
-        if (live != null) {
-            val outcome = live.run(command, timeoutMs)
-            // A broken session falls back to a one-shot process instead of
-            // failing the command outright.
-            if (outcome is CommandOutcome.Ok || (outcome as? CommandOutcome.Fail)?.errorCode != "shell_closed") {
-                if (outcome is CommandOutcome.Fail && outcome.errorCode == "timeout") dropSession()
-                lastShellMillis = System.currentTimeMillis() - started
-                return outcome
+        val started = System.nanoTime()
+        try {
+            val live = sessionOrNull() ?: return shellOnce(command, timeoutMs)
+            return when (val outcome = live.run(command, timeoutMs)) {
+                is ShellCommandSession.Result.Completed -> if (outcome.exitCode == 0) {
+                    CommandOutcome.Ok(outcome.output.ifEmpty { "ok" })
+                } else CommandOutcome.Fail("shell_failed", outcome.output.take(200))
+                is ShellCommandSession.Result.Failed -> {
+                    // A lost response does not prove the action did not run.
+                    // Retire this session; only a new command may create a new one.
+                    dropSession(live)
+                    CommandOutcome.Fail(outcome.code, outcome.message)
+                }
             }
-            dropSession()
+        } finally {
+            lastShellMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
         }
-        lastShellMillis = System.currentTimeMillis() - started
-        return shellOnce(command, timeoutMs)
     }
 
     private fun shellOnce(command: String, timeoutMs: Long = 25_000L): CommandOutcome {
@@ -314,13 +247,8 @@ class ShizukuCommandExecutor(private val context: Context) {
         val waiter = Thread { runCatching { process.waitFor() } }
         waiter.isDaemon = true
         waiter.start()
-        return try {
-            waiter.join(timeoutMs)
-            !waiter.isAlive
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
-        }
+        waiter.join(timeoutMs)
+        return !waiter.isAlive
     }
 
     // Binary-safe variant. Never merges stderr and never decodes as UTF-8.
@@ -386,6 +314,8 @@ class ShizukuCommandExecutor(private val context: Context) {
                 foregroundDebug = "shizuku_not_ready"
                 ""
             }
+        } catch (cancelled: InterruptedException) {
+            throw cancelled
         } catch (error: Exception) {
             foregroundDebug = ("probe_exception:" + (error.message ?: error.javaClass.simpleName)).take(120)
             ""
@@ -418,6 +348,8 @@ class ShizukuCommandExecutor(private val context: Context) {
                 foregroundDebug = "shizuku_not_ready"
                 ""
             }
+        } catch (cancelled: InterruptedException) {
+            throw cancelled
         } catch (error: Exception) {
             foregroundDebug = ("probe_exception:" + (error.message ?: error.javaClass.simpleName)).take(120)
             ""

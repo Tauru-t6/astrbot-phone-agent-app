@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug-only fixture. Never reads or writes real connection settings. -->
+        <activity android:name=".ui.VisualReviewActivity" android:exported="true" />
+    </application>
+</manifest>

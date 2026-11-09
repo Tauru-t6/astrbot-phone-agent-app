@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -49,7 +50,7 @@ private data class Tab(val label: String, val icon: ImageVector)
 private val tabs = listOf(
     Tab("动态", Icons.Filled.History),
     Tab("生活", Icons.Filled.GridView),
-    Tab("我的", Icons.AutoMirrored.Filled.Article),
+    Tab("我的", Icons.Outlined.PersonOutline),
 )
 
 @Composable
@@ -101,12 +102,12 @@ internal fun PhoneAgentContent(appState: AppState, initialTab: Int = 1) {
             bottomBar = {
                 // Let the message field stay directly above the keyboard.
                 if (!keyboardOpen) {
-                    Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp)) {
+                    Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp)) {
                         GlassCard(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(36.dp),
                             alpha = .58f,
-                            elevation = 7.dp,
+                            elevation = 2.dp,
                         ) {
                             Row(
                                 Modifier.fillMaxWidth().padding(5.dp).selectableGroup(),

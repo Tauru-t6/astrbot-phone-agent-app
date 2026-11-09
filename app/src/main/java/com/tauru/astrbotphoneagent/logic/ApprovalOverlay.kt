@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.annotation.MainThread
 import com.tauru.astrbotphoneagent.data.TaskApproval
 
 /**
@@ -24,7 +25,6 @@ object ApprovalOverlay {
 
     private var overlay: LinearLayout? = null
     private var shownApproval = ""
-    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** Last failure reason and how often we tried; both are shown in the sheet. */
     @Volatile
@@ -46,6 +46,7 @@ object ApprovalOverlay {
     }
 
     /** Show the card once per approval id; repeated polls do not stack views. */
+    @MainThread
     fun show(
         context: Context,
         approval: TaskApproval,
@@ -149,35 +150,35 @@ object ApprovalOverlay {
             horizontalMargin = 0.08f
         }
         attempts += 1
-        // WindowManager only accepts a view from a thread with a Looper, and the
-        // caller is a background coroutine, so the add has to hop to the main
-        // thread. Doing it inline threw and the exception was swallowed.
-        mainHandler.post {
-            try {
-                // Start slightly above and transparent, then settle down: an
-                // instant appear reads like a slide in a presentation.
-                card.alpha = 0f
-                card.translationY = -dp(28).toFloat()
-                windowManager.addView(card, params)
-                card.animate()
-                    .alpha(1f)
-                    .translationY(0f)
-                    .setDuration(240)
-                    .setInterpolator(android.view.animation.DecelerateInterpolator())
-                    .start()
-                overlay = card
-                shownApproval = approval.approvalId
-                lastError = ""
-            } catch (error: Throwable) {
-                lastError = error.javaClass.simpleName + ": " + (error.message ?: "")
-            }
+        // The caller dispatches the entire lifecycle to Main, including dismiss.
+        // Return the actual addView outcome so notification fallback still works.
+        return try {
+            // Start slightly above and transparent, then settle down: an
+            // instant appear reads like a slide in a presentation.
+            card.alpha = 0f
+            card.translationY = -dp(28).toFloat()
+            windowManager.addView(card, params)
+            card.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(240)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+            overlay = card
+            shownApproval = approval.approvalId
+            lastError = ""
+            true
+        } catch (error: Exception) {
+            lastError = error.javaClass.simpleName + ": " + (error.message ?: "")
+            false
         }
-        return true
     }
 
+    @MainThread
     fun dismiss() {
         val view = overlay ?: return
         overlay = null
+        shownApproval = ""
         val lift = (16 * view.resources.displayMetrics.density).toInt().toFloat()
         // Animate out before removing so tapping a button does not snap.
         view.animate()

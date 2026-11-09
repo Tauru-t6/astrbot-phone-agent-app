@@ -2,38 +2,19 @@ package com.tauru.astrbotphoneagent.ui.screens
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.outlined.Chat
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,148 +24,177 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.tauru.astrbotphoneagent.data.AppState
-import com.tauru.astrbotphoneagent.data.ConnectionState
-import com.tauru.astrbotphoneagent.data.DeviceStatus
-import com.tauru.astrbotphoneagent.data.QuickAction
-import com.tauru.astrbotphoneagent.ui.components.BatteryIcon
-import com.tauru.astrbotphoneagent.ui.components.FocusIcon
-import com.tauru.astrbotphoneagent.ui.components.GlassCard
-import com.tauru.astrbotphoneagent.ui.components.LocationIcon
-import com.tauru.astrbotphoneagent.ui.components.LockIcon
-import com.tauru.astrbotphoneagent.ui.components.NightIcon
-import com.tauru.astrbotphoneagent.ui.components.ScreenTimeIcon
-import com.tauru.astrbotphoneagent.ui.components.ScreenshotIcon
+import com.tauru.astrbotphoneagent.data.*
+import com.tauru.astrbotphoneagent.ui.components.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.min
 
-/** A quiet daily overview, using only the device values exposed by AppState. */
 @Composable
-fun HomeScreen(
-    appState: AppState,
-    onQuickAction: (String) -> Unit,
-) {
+fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
     val status by appState.deviceStatus.collectAsState(initial = null)
     val actions by appState.quickActions.collectAsState(initial = emptyList())
     val tasks by appState.tasks.collectAsState(initial = emptyList())
     val reminders by appState.reminders.collectAsState(initial = emptyList())
-    var activityPanel by rememberSaveable { mutableStateOf<String?>(null) }
-
+    val diagnostics by appState.diagnostics.collectAsState(initial = null)
+    val settings by appState.connectionSettings.collectAsState(initial = null)
+    var panel by rememberSaveable { mutableStateOf<String?>(null) }
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(start = 22.dp, top = 18.dp, end = 22.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        HomeHeader(status?.connection ?: ConnectionState.UNKNOWN)
-        LifeActivityEntrances(tasks.size, reminders.size) { activityPanel = it }
-        ScreenTimeHero(status)
-        DeviceDetails(status)
-        if (actions.isNotEmpty()) {
-            QuickActionsSection(actions, onQuickAction)
+        PageHeading("生活", SimpleDateFormat("M月d日 · EEEE", Locale.CHINA).format(Date())) {
+            FilledTonalIconButton(onClick = { panel = "connection" }, enabled = settings != null, colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)) {
+                Icon(Icons.Outlined.Settings, contentDescription = "打开服务器连接")
+            }
         }
+        DeviceConnectionCard(status, diagnostics, settings) { panel = "connection" }
+        ScreenTimeCard(status, diagnostics) { panel = "permissions" }
+        LifeActivityEntrances(tasks.size, reminders.size) { panel = it }
+        if (actions.isNotEmpty()) QuickActionsSection(actions, onQuickAction)
+        ForegroundRow(status)
     }
-    activityPanel?.let { panel ->
-        LifeActivitySheet(appState, panel, onDismiss = { activityPanel = null })
+    when (panel) {
+        "connection" -> settings?.let { ConnectionSettingsSheet(appState, it) { panel = null } }
+        "permissions" -> PermissionSettingsSheet(appState) { panel = null }
+        "tasks", "reminders" -> LifeActivitySheet(appState, panel!!) { panel = null }
+    }
+}
+
+@Composable
+private fun DeviceConnectionCard(
+    status: DeviceStatus?, diagnostics: AppDiagnostics?, settings: ConnectionSettings?, onClick: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val needsSetup = settings != null && (settings.pluginUrl.isBlank() || !settings.pluginTokenConfigured)
+    val title = when {
+        needsSetup -> "连接你的 AstrBot"
+        diagnostics?.pluginConnected == true -> "AstrBot 已连接"
+        diagnostics == null -> "正在读取连接状态"
+        else -> "AstrBot 尚未连接"
+    }
+    val detail = when {
+        needsSetup -> "填入服务器地址，让手机与助手保持联系"
+        diagnostics?.pluginConnected != true -> "查看连接设置与诊断"
+        diagnostics.shizukuReady -> "手机控制已就绪"
+        else -> "手机控制待就绪 · 前往查看权限"
+    }
+    val shape = RoundedCornerShape(22.dp)
+    GlassCard(Modifier.fillMaxWidth().clip(shape).clickable(enabled = settings != null, role = Role.Button, onClick = onClick), shape = shape, alpha = .80f, elevation = 1.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(40.dp).background(colors.primaryContainer, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Outlined.Wifi, null, tint = colors.onPrimaryContainer, modifier = Modifier.size(22.dp))
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = colors.onSurface)
+                    Text(detail, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                }
+                Icon(Icons.Outlined.ChevronRight, null, tint = colors.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            }
+            HorizontalDivider(color = colors.outlineVariant.copy(alpha = .55f))
+            FlowStatus(status, diagnostics)
+        }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun HomeHeader(connection: ConnectionState) {
+private fun FlowStatus(status: DeviceStatus?, diagnostics: AppDiagnostics?) {
     val colors = MaterialTheme.colorScheme
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            text = "生活",
-            style = MaterialTheme.typography.displayLarge.copy(
-                fontWeight = FontWeight.Bold,
-                letterSpacing = (-1.1).sp,
-            ),
-            color = colors.onSurface,
-        )
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = SimpleDateFormat("M月d日 · EEEE", Locale.CHINA).format(Date()),
-                modifier = Modifier.padding(end = 12.dp, top = 4.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.onSurfaceVariant,
-            )
-            ConnectionBadge(connection)
+    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            BatteryIcon(Modifier.size(18.dp), colors.primary, ((status?.batteryPercent ?: 0) / 100f).coerceIn(0f, 1f))
+            Text(status?.batteryPercent?.let { "$it%${if (status?.charging == true) " · 充电中" else ""}" } ?: "电量待同步", style = MaterialTheme.typography.labelMedium, color = colors.onSurface)
         }
+        Text(diagnostics?.lastSyncAtEpochMs?.takeIf { it > 0 }?.let { "同步于 ${relativeTime(it)}" } ?: "尚未同步", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+    }
+}
+
+/** Unknown timestamps are handled by callers; no invented last-sync time. */
+internal fun relativeTime(epochMs: Long, now: Long = System.currentTimeMillis()): String {
+    val minutes = (now - epochMs).coerceAtLeast(0L) / 60_000
+    return when {
+        minutes < 1 -> "刚刚"
+        minutes < 60 -> "$minutes 分钟前"
+        minutes < 1440 -> "${minutes / 60} 小时前"
+        else -> "${minutes / 1440} 天前"
     }
 }
 
 @Composable
-private fun ConnectionBadge(state: ConnectionState) {
-    val colors = MaterialTheme.colorScheme
-    val dotColor = when (state) {
-        ConnectionState.ONLINE_DIRECT, ConnectionState.ONLINE_RELAY -> Color(0xFF3FA98B)
-        ConnectionState.UNKNOWN -> colors.onSurfaceVariant
-        ConnectionState.OFFLINE -> colors.error
-    }
-    val label = when (state) {
-        ConnectionState.ONLINE_DIRECT -> "直连在线"
-        ConnectionState.ONLINE_RELAY -> "中继在线"
-        ConnectionState.UNKNOWN -> "等待连接"
-        ConnectionState.OFFLINE -> "设备离线"
-    }
-    Row(
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(colors.surface.copy(alpha = 0.42f))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(dotColor))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-    }
-}
+private fun warningColor(): Color = MaterialTheme.colorScheme.error
+
+/* ---------- screen time ---------- */
+
+private enum class ScreenTimeAvailability { WAITING, NO_PERMISSION, READY }
 
 @Composable
-private fun ScreenTimeHero(status: DeviceStatus?) {
+private fun ScreenTimeCard(status: DeviceStatus?, diagnostics: AppDiagnostics?, onPermissions: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val fontScale = LocalDensity.current.fontScale
+    // Without usage-access the counter reads 0 no matter what the phone did, so
+    // that state is reported as "未授权" rather than a truthful-looking zero.
+    val availability = when {
+        diagnostics == null -> ScreenTimeAvailability.WAITING
+        !diagnostics.usageAccess -> ScreenTimeAvailability.NO_PERMISSION
+        status == null -> ScreenTimeAvailability.WAITING
+        else -> ScreenTimeAvailability.READY
+    }
+    val seconds = status?.screenOnSecondsToday?.takeIf { availability == ScreenTimeAvailability.READY }
     GlassCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(30.dp),
+        shape = RoundedCornerShape(24.dp),
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(22.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                ScreenTimeIcon(Modifier.size(24.dp), colors.primary)
+                ScreenTimeIcon(Modifier.size(18.dp), colors.primary)
                 Text(
                     text = "今日屏幕时间",
-                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = colors.onSurface,
                 )
+                Text(
+                    text = when (availability) {
+                        ScreenTimeAvailability.READY -> "全天 24 小时"
+                        ScreenTimeAvailability.NO_PERMISSION -> "未授权"
+                        ScreenTimeAvailability.WAITING -> "等待同步"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when (availability) {
+                        ScreenTimeAvailability.NO_PERMISSION -> warningColor()
+                        else -> colors.onSurfaceVariant
+                    },
+                )
             }
             BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                if (maxWidth < 260.dp || fontScale > 1.2f) {
-                    Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                        ScreenTimeValue(status?.screenOnSecondsToday)
-                        ScreenTimeRing(
-                            seconds = status?.screenOnSecondsToday,
-                            modifier = Modifier.size(110.dp).align(Alignment.End),
-                        )
+                val stack = maxWidth < 250.dp || fontScale > 1.4f
+                val ring: @Composable (Modifier) -> Unit = { modifier ->
+                    ScreenTimeRing(seconds, availability, modifier.size(if (stack) 74.dp else 80.dp))
+                }
+                val value: @Composable (Modifier) -> Unit = { modifier ->
+                    ScreenTimeValue(seconds, availability, modifier)
+                }
+                if (stack) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        value(Modifier.fillMaxWidth())
+                        ring(Modifier.align(Alignment.End))
                     }
                 } else {
                     Row(
@@ -192,53 +202,60 @@ private fun ScreenTimeHero(status: DeviceStatus?) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        Box(Modifier.weight(1f)) { ScreenTimeValue(status?.screenOnSecondsToday) }
-                        ScreenTimeRing(status?.screenOnSecondsToday, Modifier.size(110.dp))
+                        value(Modifier.weight(1f))
+                        ring(Modifier)
                     }
                 }
             }
-            Box(
-                Modifier.fillMaxWidth().height(1.dp)
-                    .background(colors.onSurface.copy(alpha = 0.07f)),
-            )
             Text(
-                text = when {
-                    status == null -> "设备连接后，今天的使用情况会显示在这里。"
-                    status.screenOnSecondsToday >= 4 * 3600L -> "今天用了挺久，留一点时间给屏幕之外。"
-                    else -> "记录今天，也给生活留一点空白。"
+                text = when (availability) {
+                    ScreenTimeAvailability.READY -> when {
+                        (seconds ?: 0L) >= 4 * 3600L -> "今天用了挺久，留一点时间给屏幕之外。"
+                        else -> "记录今天，也给生活留一点空白。"
+                    }
+                    ScreenTimeAvailability.NO_PERMISSION -> "开启使用情况访问，了解今天的屏幕使用时间。"
+                    ScreenTimeAvailability.WAITING -> "设备连接后，今天的使用情况会显示在这里。"
                 },
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (availability == ScreenTimeAvailability.NO_PERMISSION) warningColor() else colors.onSurfaceVariant,
             )
+            if (availability == ScreenTimeAvailability.NO_PERMISSION) {
+                TextButton(onClick = onPermissions, contentPadding = PaddingValues(horizontal = 0.dp)) { Text("开启使用情况访问") }
+            }
         }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ScreenTimeValue(seconds: Long?) {
+private fun ScreenTimeValue(seconds: Long?, availability: ScreenTimeAvailability, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("累计使用", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-        if (seconds == null) {
-            Text("—", fontSize = 48.sp, fontWeight = FontWeight.Medium, color = colors.onSurface)
-        } else {
-            val safeSeconds = seconds.coerceAtLeast(0L)
-            val hours = safeSeconds / 3600
-            val minutes = (safeSeconds % 3600) / 60
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (hours > 0) TimePart(hours.toString(), "小时")
-                TimePart(minutes.toString(), "分钟")
-            }
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (availability != ScreenTimeAvailability.READY) {
+            Text(
+                text = "—",
+                fontSize = if (availability == ScreenTimeAvailability.NO_PERMISSION) 30.sp else 34.sp,
+                lineHeight = 38.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (availability == ScreenTimeAvailability.NO_PERMISSION) warningColor() else colors.onSurface,
+            )
+            Text(
+                text = if (availability == ScreenTimeAvailability.NO_PERMISSION) "等待开启使用情况访问" else "等待同步",
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant,
+            )
+            return@Column
         }
-        Text(
-            text = if (seconds == null) "等待同步" else "圆环表示占全天 24 小时的比例",
-            style = MaterialTheme.typography.labelSmall,
-            color = colors.onSurfaceVariant,
-        )
+        val safeSeconds = (seconds ?: 0L).coerceAtLeast(0L)
+        val hours = safeSeconds / 3600
+        val minutes = (safeSeconds % 3600) / 60
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            if (hours > 0) TimePart(hours.toString(), "小时")
+            TimePart(minutes.toString(), "分钟")
+        }
     }
 }
 
@@ -247,15 +264,15 @@ private fun TimePart(number: String, unit: String) {
     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
         Text(
             text = number,
-            fontSize = 46.sp,
-            lineHeight = 52.sp,
-            fontWeight = FontWeight.Light,
-            letterSpacing = (-1.8).sp,
+            fontSize = 34.sp,
+            lineHeight = 40.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = (-1.2).sp,
             color = MaterialTheme.colorScheme.onSurface,
         )
         Text(
             text = unit,
-            modifier = Modifier.padding(bottom = 6.dp),
+            modifier = Modifier.padding(bottom = 4.dp),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -263,16 +280,17 @@ private fun TimePart(number: String, unit: String) {
 }
 
 @Composable
-private fun ScreenTimeRing(seconds: Long?, modifier: Modifier = Modifier) {
+private fun ScreenTimeRing(seconds: Long?, availability: ScreenTimeAvailability, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
-    val progress = ((seconds ?: 0L).coerceAtLeast(0L) / 86_400f).coerceIn(0f, 1f)
+    val usable = availability == ScreenTimeAvailability.READY
+    val progress = if (usable) ((seconds ?: 0L).coerceAtLeast(0L) / 86_400f).coerceIn(0f, 1f) else 0f
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxSize().padding(6.dp)) {
-            val stroke = 8.dp.toPx()
+        Canvas(Modifier.fillMaxSize().padding(4.dp)) {
+            val stroke = 6.dp.toPx()
             val diameter = min(size.width, size.height) - stroke
             val topLeft = Offset((size.width - diameter) / 2, (size.height - diameter) / 2)
             drawArc(
-                color = colors.primary.copy(alpha = 0.12f),
+                color = colors.primary.copy(alpha = if (usable) 0.12f else 0.06f),
                 startAngle = -90f,
                 sweepAngle = 360f,
                 useCenter = false,
@@ -292,106 +310,64 @@ private fun ScreenTimeRing(seconds: Long?, modifier: Modifier = Modifier) {
                 )
             }
         }
-        ScreenTimeIcon(Modifier.size(35.dp), colors.primary.copy(alpha = 0.8f))
+        ScreenTimeIcon(
+            Modifier.size(24.dp),
+            if (usable) colors.primary.copy(alpha = .8f) else colors.onSurfaceVariant.copy(alpha = .5f),
+        )
     }
 }
 
+/* ---------- foreground app ---------- */
+
 @Composable
-private fun DeviceDetails(status: DeviceStatus?) {
+private fun ForegroundRow(status: DeviceStatus?) {
     val colors = MaterialTheme.colorScheme
-    val fontScale = LocalDensity.current.fontScale
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val stackCards = maxWidth < 300.dp || fontScale > 1.2f
-        val battery: @Composable (Modifier) -> Unit = { modifier ->
-            CompactInfoCard(
-                label = "设备电量",
-                value = status?.batteryPercent?.let { "$it%" } ?: "待同步",
-                detail = when {
-                    status == null -> "等待设备连接"
-                    status.charging -> "正在充电"
-                    else -> "未在充电"
-                },
-                modifier = modifier,
-            ) {
-                BatteryIcon(
-                    Modifier.size(26.dp),
-                    colors.primary,
-                    ((status?.batteryPercent ?: 0) / 100f).coerceIn(0f, 1f),
+    val app = status?.foregroundAppLabel?.takeIf { it.isNotBlank() }
+        ?: status?.foregroundAppPackage?.takeIf { it.isNotBlank() }
+    GlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), alpha = .54f, elevation = 2.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            ScreenTimeIcon(Modifier.size(18.dp), colors.primary)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("正在使用", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                Text(
+                    text = app ?: when (status) {
+                        null -> "等待设备连接"
+                        else -> "没有前台应用记录"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = if (app == null) colors.onSurfaceVariant else colors.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
-        val foreground: @Composable (Modifier) -> Unit = { modifier ->
-            CompactInfoCard(
-                label = "正在使用",
-                value = status?.foregroundAppLabel?.takeIf { it.isNotBlank() }
-                ?: status?.foregroundAppPackage?.takeIf { it.isNotBlank() }
-                ?: "暂无记录",
-                detail = "前台应用",
-                modifier = modifier,
-            ) { ScreenTimeIcon(Modifier.size(26.dp), colors.primary) }
-        }
-        if (stackCards) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                battery(Modifier.fillMaxWidth())
-                foreground(Modifier.fillMaxWidth())
-            }
-        } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                battery(Modifier.weight(1f))
-                foreground(Modifier.weight(1f))
-            }
-        }
     }
 }
 
-@Composable
-private fun CompactInfoCard(
-    label: String,
-    value: String,
-    detail: String,
-    modifier: Modifier,
-    icon: @Composable () -> Unit,
-) {
-    val colors = MaterialTheme.colorScheme
-    GlassCard(modifier = modifier, shape = RoundedCornerShape(23.dp)) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                icon()
-                Text(label, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-            }
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Medium,
-                color = colors.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(detail, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-        }
-    }
-}
+/* ---------- quick actions ---------- */
 
 @Composable
 private fun QuickActionsSection(actions: List<QuickAction>, onQuickAction: (String) -> Unit) {
     val colors = MaterialTheme.colorScheme
     val fontScale = LocalDensity.current.fontScale
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = "快捷操作",
-            modifier = Modifier.padding(top = 4.dp),
-            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(start = 2.dp, top = 4.dp),
+            style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
             color = colors.onSurface,
         )
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val columns = if (maxWidth < 300.dp || fontScale > 1.2f) 1 else 2
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 actions.chunked(columns).forEach { actionRow ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         actionRow.forEach { action ->
                             QuickActionCard(
                                 action = action,
@@ -410,24 +386,24 @@ private fun QuickActionsSection(actions: List<QuickAction>, onQuickAction: (Stri
 @Composable
 private fun QuickActionCard(action: QuickAction, modifier: Modifier, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(21.dp)
+    val shape = RoundedCornerShape(18.dp)
     val tint = colors.primary
     GlassCard(
-        modifier = modifier.clip(shape).clickable(onClick = onClick),
+        modifier = modifier.clip(shape).clickable(role = Role.Button, onClick = onClick),
         shape = shape,
         alpha = if (action.active) 0.78f else 0.62f,
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().heightIn(min = 84.dp).padding(14.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
         ) {
             Box(
-                modifier = Modifier.size(35.dp).clip(CircleShape)
+                modifier = Modifier.size(30.dp).clip(CircleShape)
                     .background(colors.primary.copy(alpha = if (action.active) 0.2f else 0.09f)),
                 contentAlignment = Alignment.Center,
             ) {
-                val iconModifier = Modifier.size(25.dp)
+                val iconModifier = Modifier.size(19.dp)
                 when (action.iconName) {
                     "self_improvement" -> FocusIcon(iconModifier, tint)
                     "screenshot" -> ScreenshotIcon(iconModifier, tint)
@@ -438,24 +414,23 @@ private fun QuickActionCard(action: QuickAction, modifier: Modifier, onClick: ()
                     else -> FocusIcon(iconModifier, tint)
                 }
             }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     text = action.title,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = colors.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
+                // One line only: the card is an entry point, not a status board.
+                // Progress and outcome live in「我的 → 手机任务记录」.
                 Text(
-                    text = if (action.dangerous) "需要确认" else action.subtitle,
+                    text = if (action.dangerous) "操作前需要确认" else action.subtitle,
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.onSurfaceVariant,
-                )
-                // 卡片只表示入口与受理；进度/结果在「我的 → 手机任务记录」查看。
-                // 不提供假进度或本地倒计时。
-                Text(
-                    text = "结果见「我的 → 手机任务记录」",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.onSurfaceVariant.copy(alpha = 0.7f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

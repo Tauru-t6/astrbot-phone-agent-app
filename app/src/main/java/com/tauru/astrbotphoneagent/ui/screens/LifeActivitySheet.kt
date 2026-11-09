@@ -15,6 +15,11 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -30,14 +35,23 @@ import java.util.Locale
 
 @Composable
 internal fun LifeActivityEntrances(taskCount: Int, reminderCount: Int, onOpen: (String) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        listOf(Triple("tasks", "任务", "$taskCount 条记录"), Triple("reminders", "提醒", "$reminderCount 项待提醒")).forEach { (key, title, detail) ->
-            GlassCard(Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).clickable { onOpen(key) }, shape = RoundedCornerShape(20.dp), alpha = .54f, elevation = 2.dp) {
-                Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Icon(if (key == "tasks") Icons.Outlined.Checklist else Icons.Outlined.NotificationsNone, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
-                        Text(detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val entries = listOf(Triple("tasks", "任务", "$taskCount 条记录"), Triple("reminders", "提醒", "$reminderCount 项待提醒"))
+    val fontScale = LocalDensity.current.fontScale
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth < 300.dp || fontScale > 1.2f) 1 else 2
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            entries.chunked(columns).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEach { (key, title, detail) ->
+                        GlassCard(Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).clickable(role = Role.Button) { onOpen(key) }, shape = RoundedCornerShape(20.dp), alpha = .70f, elevation = 1.dp) {
+                            Row(Modifier.heightIn(min = 64.dp).padding(14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Icon(if (key == "tasks") Icons.Outlined.Checklist else Icons.Outlined.NotificationsNone, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface)
+                                    Text(detail, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -155,7 +169,7 @@ internal fun LifeActivitySheet(appState: AppState, panel: String, onDismiss: () 
 internal fun FeedbackNotice(feedback: ActionFeedback) {
     val color = if (feedback.success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
     Text(feedback.message, style = MaterialTheme.typography.bodySmall, color = color,
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(color.copy(alpha = .08f)).padding(12.dp))
+        modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }.clip(RoundedCornerShape(12.dp)).background(color.copy(alpha = .08f)).padding(12.dp))
 }
 
 @Composable

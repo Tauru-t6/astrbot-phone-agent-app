@@ -219,13 +219,13 @@ class RealAppState(context: Context) : AppState {
                 it.status == "pending" && it.expiresAt > System.currentTimeMillis() / 1000.0
             }
             if (pendingApproval != null) {
-                val shown = ApprovalOverlay.show(
+                val shown = withContext(Dispatchers.Main.immediate) { ApprovalOverlay.show(
                     appContext, pendingApproval,
                     secondsLeft = (pendingApproval.expiresAt - System.currentTimeMillis() / 1000.0)
                         .toInt().coerceAtLeast(0),
                     onApprove = { scope.launch { approveTask(pendingApproval.approvalId) } },
                     onReject = { scope.launch { rejectTask(pendingApproval.approvalId, "悬浮窗拒绝") } },
-                )
+                ) }
                 // The floating card is best effort; a notification always works.
                 if (!shown) {
                     val actions = pendingApproval.actions.joinToString("、") { ApprovalLabels.action(it) }
@@ -237,7 +237,7 @@ class RealAppState(context: Context) : AppState {
                     )
                 }
             } else {
-                ApprovalOverlay.dismiss()
+                withContext(Dispatchers.Main.immediate) { ApprovalOverlay.dismiss() }
             }
             val taskRuns = state.optJSONArray("task_runs")?.let { arr ->
                 (0 until arr.length()).mapNotNull { index -> arr.optJSONObject(index) }.map { item ->
