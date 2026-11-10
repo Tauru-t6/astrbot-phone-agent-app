@@ -31,6 +31,10 @@ class LogicConfig(private val context: Context) {
         val deviceName = stringPreferencesKey("device_name")
         val autoApproveActions = stringPreferencesKey("auto_approve_actions")
         val notificationForwarding = booleanPreferencesKey("notification_forwarding")
+        val healthConnectEnabled = booleanPreferencesKey("health_connect_enabled")
+        val healthClearPending = booleanPreferencesKey("health_clear_pending")
+        val healthLastUpload = stringPreferencesKey("health_last_upload")
+        val healthOriginPackage = stringPreferencesKey("health_origin_package")
     }
 
     companion object {
@@ -99,10 +103,26 @@ class LogicConfig(private val context: Context) {
     suspend fun autoApproveActions(): Set<String> =
         autoApproveActionsFlow.first().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
     suspend fun notificationForwarding(): Boolean = notificationForwardingFlow.first()
+    suspend fun healthConnectEnabled(): Boolean = context.logicDataStore.data.first()[Keys.healthConnectEnabled] ?: false
+    suspend fun healthClearPending(): Boolean = context.logicDataStore.data.first()[Keys.healthClearPending] ?: false
+    suspend fun healthLastUpload(): Long = context.logicDataStore.data.first()[Keys.healthLastUpload]?.toLongOrNull() ?: 0L
+    internal suspend fun healthSettings(): HealthSyncSettings {
+        val prefs = context.logicDataStore.data.first()
+        return HealthSyncSettings(
+            enabled = prefs[Keys.healthConnectEnabled] ?: false,
+            clearPending = prefs[Keys.healthClearPending] ?: false,
+            lastUpload = prefs[Keys.healthLastUpload]?.toLongOrNull() ?: 0L,
+            originPackage = prefs[Keys.healthOriginPackage] ?: HealthSource.DEFAULT_PACKAGE,
+        )
+    }
 
     suspend fun update(updates: Map<String, String>) {
         context.logicDataStore.edit { prefs ->
             for ((key, value) in updates) {
+                if (key == "health_connect_enabled" || key == "health_clear_pending") {
+                    prefs[if (key == "health_connect_enabled") Keys.healthConnectEnabled else Keys.healthClearPending] = value == "true"
+                    continue
+                }
                 if (key == "notification_forwarding") {
                     prefs[Keys.notificationForwarding] = value.trim().lowercase() in setOf("1", "true", "on", "yes")
                     continue
@@ -119,6 +139,8 @@ class LogicConfig(private val context: Context) {
                     "relay_token" -> Keys.relayToken
                     "device_name" -> Keys.deviceName
                     "auto_approve_actions" -> Keys.autoApproveActions
+                    "health_last_upload" -> Keys.healthLastUpload
+                    "health_origin_package" -> Keys.healthOriginPackage
                     else -> null
                 }
                 if (prefKey != null) prefs[prefKey] = value

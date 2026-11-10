@@ -24,6 +24,8 @@ class RealAppState(context: Context) : AppState {
     private val runner = CommandRunner(appContext, executor)
     private val bridge = PluginBridge(appContext, config, runner, scope, executor)
     private val client = AstrBotClient(config)
+    private val healthSync = HealthConnectSync(appContext, config)
+    override val healthConnect = healthSync.state
     private val profileRepository = ProfileRepository(appContext)
     override val companion: Flow<CompanionProfile> = profileRepository.profile
     override val connectionSettings: Flow<ConnectionSettings> = config.connectionSettings
@@ -84,11 +86,31 @@ class RealAppState(context: Context) : AppState {
             launch { collectRemoteState() }
             launch { collectDeviceStatus() }
             bridge.start()
+            launch {
+                healthSync.refresh()
+                delay(20_000)
+                while (isActive) {
+                    healthSync.sync(force = false)
+                    delay(15 * 60_000)
+                }
+            }
         }
     }
 
     override suspend fun saveCompanionProfile(name: String, avatarUri: String?): ActionFeedback =
         profileRepository.save(name, avatarUri)
+
+    override suspend fun refreshHealthConnect(): ActionFeedback = healthSync.refresh()
+    override suspend fun setHealthConnectEnabled(enabled: Boolean): ActionFeedback = healthSync.setEnabled(enabled)
+    override suspend fun setHealthConnectSource(packageName: String): ActionFeedback = healthSync.setSource(packageName)
+    override suspend fun syncHealthConnect(): ActionFeedback = healthSync.sync()
+
+    fun onForeground() {
+        scope.launch {
+            healthSync.refresh()
+            healthSync.sync(force = false)
+        }
+    }
 
     override suspend fun saveAutomationSettings(update: AutomationSettings): ActionFeedback {
         val allowed = update.autoApproveActions.intersect(DANGEROUS_ACTIONS)

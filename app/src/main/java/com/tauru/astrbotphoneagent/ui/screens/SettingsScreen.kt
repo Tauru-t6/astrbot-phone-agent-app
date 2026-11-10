@@ -69,6 +69,8 @@ fun SettingsScreen(appState: AppState) {
                 diagnostics?.usageAccess != true -> "使用情况访问待开启"
                 else -> "手机控制与使用统计已就绪"
             }, onClick = { panel = "permissions" })
+            HorizontalDivider(Modifier.padding(start = 58.dp), color = colors.outlineVariant.copy(alpha = .5f))
+            SettingsRow(Icons.Outlined.FavoriteBorder, "Health Connect", "健康读取、服务器同步与数据来源", onClick = { panel = "health" })
         }
         SettingsGroup("日常与偏好") {
             SettingsRow(Icons.Outlined.TaskAlt, "手机任务记录", "${tasks.size} 条记录 · 查看进度与结果", onClick = { panel = "tasks" })
@@ -82,6 +84,7 @@ fun SettingsScreen(appState: AppState) {
     when (panel) {
         "connection" -> settings?.let { ConnectionSettingsSheet(appState, it) { panel = null } }
         "permissions" -> PermissionSettingsSheet(appState) { panel = null }
+        "health" -> HealthConnectSheet(appState) { panel = null }
         "tasks" -> LifeActivitySheet(appState, "tasks") { panel = null }
         "profile" -> companion?.let { ProfileSettingsSheet(appState, it) { panel = null } }
         "automation" -> AutomationSettingsSheet(appState) { panel = null }

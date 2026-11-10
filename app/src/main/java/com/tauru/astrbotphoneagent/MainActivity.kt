@@ -30,6 +30,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        appState.onForeground()
+    }
+
     private fun requestRuntimePermissions() {
         val wanted = (listOf(
             Manifest.permission.ACCESS_COARSE_LOCATION,

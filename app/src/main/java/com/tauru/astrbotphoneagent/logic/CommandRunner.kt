@@ -5,8 +5,10 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
+import android.os.SystemClock
 import android.util.AtomicFile
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationCompat
 import androidx.core.location.LocationManagerCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -111,7 +113,8 @@ class CommandRunner(private val context: Context, private val executor: ShizukuC
             fine && manager.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
             else -> return envelope.result(false, code = "unavailable", error = "系统定位未开启")
         }
-        val location = withTimeoutOrNull(20_000) {
+        val timeoutSeconds = envelope.args["timeout_seconds"]?.toLongOrNull()?.coerceIn(3L, 30L) ?: 20L
+        val location = withTimeoutOrNull(timeoutSeconds * 1000) {
             suspendCancellableCoroutine<Location?> { continuation ->
                 val signal = androidx.core.os.CancellationSignal()
                 continuation.invokeOnCancellation { signal.cancel() }
@@ -120,9 +123,19 @@ class CommandRunner(private val context: Context, private val executor: ShizukuC
                         ContextCompat.getMainExecutor(context)) { fix -> if (continuation.isActive) continuation.resume(fix) }
                 } catch (_: SecurityException) { if (continuation.isActive) continuation.resume(null) }
             }
-        } ?: return envelope.result(false, code = "timeout", error = "20 秒内未获取到位置")
-        return envelope.result(true, JSONObject().put("latitude", location.latitude).put("longitude", location.longitude)
-            .put("coord_type", "wgs84").put("accuracy_m", location.accuracy.toInt()).put("provider", provider).toString())
+        } ?: return envelope.result(false, code = "timeout", error = "${timeoutSeconds} 秒内未获取到位置")
+        val output = JSONObject(PhoneLocationPayload.encode(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            fixTimeMs = location.time,
+            fixElapsedRealtimeNanos = location.elapsedRealtimeNanos,
+            nowElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+            provider = provider,
+            accuracyMeters = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
+            isMock = LocationCompat.isMock(location),
+            addressRequested = envelope.args["include_address"].toBoolean(),
+        )).toString()
+        return envelope.result(true, output)
     }
 
     private fun CommandEnvelope.result(success: Boolean, output: String? = null, code: String = "", error: String = "") =

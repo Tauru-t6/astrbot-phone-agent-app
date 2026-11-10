@@ -30,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tauru.astrbotphoneagent.data.*
+import com.tauru.astrbotphoneagent.logic.HealthSource
 import com.tauru.astrbotphoneagent.ui.components.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -44,6 +45,7 @@ fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
     val reminders by appState.reminders.collectAsState(initial = emptyList())
     val diagnostics by appState.diagnostics.collectAsState(initial = null)
     val settings by appState.connectionSettings.collectAsState(initial = null)
+    val health by appState.healthConnect.collectAsState(initial = HealthConnectState())
     var panel by rememberSaveable { mutableStateOf<String?>(null) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -57,6 +59,21 @@ fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
         }
         DeviceConnectionCard(status, diagnostics, settings) { panel = "connection" }
         ScreenTimeCard(status, diagnostics) { panel = "permissions" }
+        if (health.enabled) {
+            GlassCard(Modifier.fillMaxWidth().clickable(role = Role.Button) { panel = "health" }) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("健康摘要", style = MaterialTheme.typography.titleMedium)
+                    Text(health.latestDate.ifBlank { "Health Connect · ${HealthSource.label(health.originPackage)}" }, style = MaterialTheme.typography.bodySmall)
+                    val pieces = listOfNotNull(
+                        health.latestMetrics["steps"]?.let { "${it.toLong()} 步" },
+                        health.latestMetrics["sleep_minutes"]?.let { "睡眠 ${String.format(Locale.getDefault(), "%.1f", it / 60)} 小时" },
+                        health.latestMetrics["heart_rate_avg"]?.let { "心率均值 ${it.toInt()}" },
+                    )
+                    Text(health.error ?: pieces.joinToString(" · ").ifBlank { "等待健康数据，点击查看授权与同步" },
+                        style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         LifeActivityEntrances(tasks.size, reminders.size) { panel = it }
         if (actions.isNotEmpty()) QuickActionsSection(actions, onQuickAction)
         ForegroundRow(status)
@@ -64,6 +81,7 @@ fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
     when (panel) {
         "connection" -> settings?.let { ConnectionSettingsSheet(appState, it) { panel = null } }
         "permissions" -> PermissionSettingsSheet(appState) { panel = null }
+        "health" -> HealthConnectSheet(appState) { panel = null }
         "tasks", "reminders" -> LifeActivitySheet(appState, panel!!) { panel = null }
     }
 }

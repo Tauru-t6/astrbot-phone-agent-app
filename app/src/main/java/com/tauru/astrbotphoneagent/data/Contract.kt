@@ -126,6 +126,22 @@ data class AppDiagnostics(
 
 data class ActionFeedback(val success: Boolean, val message: String)
 
+data class HealthConnectState(
+    val originPackage: String = "com.mi.health",
+    val available: Boolean = false,
+    val enabled: Boolean = false,
+    val grantedTypes: Set<String> = emptySet(),
+    val permissionsKnown: Boolean = false,
+    val syncing: Boolean = false,
+    val lastReadAtEpochMs: Long = 0,
+    val lastUploadAtEpochMs: Long = 0,
+    val latestDate: String = "",
+    val latestMetrics: Map<String, Double> = emptyMap(),
+    val error: String? = null,
+    val serverSourceMode: String = "",
+    val clearPending: Boolean = false,
+)
+
 // User-controlled automation preferences, mirrored from local storage.
 data class AutomationSettings(
     val autoApproveActions: Set<String> = setOf("screenshot"),
@@ -248,6 +264,7 @@ interface AppState {
     val automationSettings: Flow<AutomationSettings> get() = flowOf(AutomationSettings())
     // G1: autonomy overview for the diagnostics/autonomy page.
     val autonomyOverview: Flow<AutonomyOverview> get() = flowOf(AutonomyOverview())
+    val healthConnect: Flow<HealthConnectState> get() = flowOf(HealthConnectState())
 
     // Intents (suspend, fast-returning; outcomes come through the flows)
     suspend fun sendChat(text: String)
@@ -264,4 +281,8 @@ interface AppState {
     suspend fun testConnection(): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun saveCompanionProfile(name: String, avatarUri: String?): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun saveAutomationSettings(update: AutomationSettings): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun refreshHealthConnect(): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun setHealthConnectEnabled(enabled: Boolean): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun setHealthConnectSource(packageName: String): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun syncHealthConnect(): ActionFeedback = ActionFeedback(false, "暂不可用")
 }

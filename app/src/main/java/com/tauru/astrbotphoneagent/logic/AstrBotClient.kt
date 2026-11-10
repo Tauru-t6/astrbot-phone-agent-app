@@ -38,6 +38,8 @@ class AstrBotClient(private val config: LogicConfig) {
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .followRedirects(false)
+            .followSslRedirects(false)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(180, TimeUnit.SECONDS)
             .build()
@@ -249,16 +251,16 @@ class AstrBotClient(private val config: LogicConfig) {
             .toRequestBody("application/json; charset=utf-8".toMediaType()))
         val body = executeForBody(builder.build()) ?: throw ApiException("服务器返回了空响应")
         if (!body.optBoolean("success")) {
-            throw ApiException(when (body.optString("error_code")) {
-                "not_found" -> "这条提醒已不存在，请刷新列表"
-                "invalid_minutes", "invalid_text", "validation_error", "invalid_request" -> "提醒内容或时间不符合要求"
-                "too_many_reminders", "limit_reached", "reminder_limit" -> "待办提醒数量已达上限"
-                "unauthorized", "forbidden" -> "认证失败，请检查插件令牌"
-                else -> "服务器未完成请求，请稍后重试"
-            })
+            val code = body.optString("error_code")
+            throw ApiException(ApiFailureMessage.forResponse(null, code, path.startsWith("/app/health/")))
         }
         return body
     }
+
+    suspend fun uploadHealthSnapshot(payload: JSONObject): JSONObject = pluginRequest("/app/health/snapshot", payload)
+
+    suspend fun clearHealthSnapshot(deviceId: String): JSONObject =
+        pluginRequest("/app/health/clear", JSONObject().put("device_id", deviceId))
 
     /** Relay queue: claim the next envelope for this device, if any. */
     suspend fun relayPoll(deviceId: String): CommandEnvelope? {
@@ -336,11 +338,13 @@ class AstrBotClient(private val config: LogicConfig) {
                 override fun onResponse(call: Call, response: Response) {
                     response.use {
                         val body = runCatching { it.body?.string() }.getOrNull()
-                        if (!it.isSuccessful || body == null) {
-                            if (continuation.isActive) continuation.resumeWithException(ApiException(httpError(it.code)))
+                        val parsed = body?.let { value -> runCatching { JSONObject(value) }.getOrNull() }
+                        if (!it.isSuccessful) {
+                            val message = ApiFailureMessage.forResponse(it.code, parsed?.optString("error_code"),
+                                request.url.encodedPath.contains("/app/health/"))
+                            if (continuation.isActive) continuation.resumeWithException(ApiException(message))
                             return
                         }
-                        val parsed = runCatching { JSONObject(body) }.getOrNull()
                         if (continuation.isActive) {
                             if (parsed == null) continuation.resumeWithException(ApiException("服务器响应格式不正确"))
                             else continuation.resume(parsed)

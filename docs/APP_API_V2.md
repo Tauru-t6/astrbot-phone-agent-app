@@ -11,8 +11,9 @@ perform an Android health probe unless explicitly requested by a device route.
 ## Runtime safety checks
 
 Optional routes recheck their feature switch for each request, including after
-runtime configuration changes. Routes disabled at startup are still omitted
-until plugin reload. `POST /device/command` requires `enabled=true` and the App
+runtime configuration changes. Most optional routes disabled at startup are
+omitted until plugin reload; the Health Connect upload and clear routes remain
+registered and enforce their checks on each request. `POST /device/command` requires `enabled=true` and the App
 backend, and rejects disabled screenshot, observation, location, usage and policy
 actions. `args` must be a JSON object containing finite numbers. Policy commands
 cannot target protected system/control packages. These checks complement the
@@ -21,6 +22,77 @@ host's Dashboard authentication and Android's local approval controls.
 Notification ingestion returns `503 storage_unavailable` on persistence failure
 and restores its previous in-memory state, so the same batch can be retried.
 Private chat task approvals do not require the night guard to be enabled.
+
+## Health Connect summaries
+
+Added in plugin 0.9.2 with App 0.3.27. Plugin 0.9.3 accepts one validated
+origin package, and App 0.3.28 lets the user select it. Both endpoints use the configured
+Dashboard JWT at `/api/plug/astrbot_plugin_phone_agent`; the phone shared Token
+does not authenticate these routes. Browser cross-origin writes are rejected.
+
+`POST /app/health/snapshot` requires the plugin and `enable_health_tools` to be
+enabled, and `device_id` must match the currently registered phone. The App
+uploads only after the user grants Health Connect reads and enables the separate
+server-sync switch. Example (generate the capture time, dates and ID for each read):
+
+```json
+{
+  "schema_version": 1,
+  "source": "health_connect",
+  "device_id": "registered-device-id",
+  "snapshot_id": "unique-snapshot-id",
+  "captured_at": 1794312000.0,
+  "zone_id": "Asia/Shanghai",
+  "origin_packages": ["com.mi.health"],
+  "status": "ok",
+  "granted_types": ["steps"],
+  "days": [{"date": "2026-11-10", "metrics": {"steps": 120}}]
+}
+```
+
+The upload limit is 64 KiB, with at most seven unique daily rows. `captured_at`
+is Unix seconds, no more than 24 hours old or 300 seconds in the future.
+Allowed types are `steps`, `sleep`, `heart_rate`, `oxygen_saturation`, and
+`calories`. The corresponding numeric metrics are `steps`, `sleep_minutes`,
+`heart_rate_avg/min/max`, `spo2_avg/min`, and `active_calories_kcal`. Unknown,
+non-finite, out-of-range or ungranted metrics are rejected. Missing metrics are
+omitted, never filled with zero. `origin_packages` contains exactly one valid
+Android application package identifier; the payload cannot combine sources.
+`com.mi.health` remains the default and is the only source verified on a real device.
+
+`status` is `ok`, `permission_denied`, `unavailable`, `read_failed`, or `disabled`.
+Non-`ok` snapshots must have empty `days` and invalidate the previous values;
+an accepted status report does not mean health data was read successfully.
+A successful response has `success=true`, `accepted=true`, `duplicate`,
+`received_at` and `source_mode`. Repeating an identical `snapshot_id` is
+idempotent and does not refresh the stored timestamp. Reusing its ID for
+different content or replacing a newer snapshot is rejected.
+
+`POST /app/health/clear` accepts `{"device_id":"registered-device-id"}` and
+returns `{"success":true,"cleared":true}`. It permits deletion after the health
+feature or plugin switch is disabled, but still requires authentication, the
+current device and allowed origin. Deletion is idempotent for the same device.
+The App stops local reads when synchronization is disabled and persists a
+pending clear for retries while offline. Permission changes are reported on
+the next read; offline revocation cannot immediately remove a server copy.
+
+| HTTP | `error_code` / meaning |
+| --- | --- |
+| 400 | `invalid_json`, `invalid_schema`, `invalid_source`, `invalid_device`, `invalid_snapshot_id`, `invalid_capture_time`, `invalid_zone`, `invalid_permissions`, `invalid_days`, `invalid_day`, `invalid_date`, `invalid_metrics`, `invalid_metric_value` |
+| 401 | Dashboard authentication rejected or expired; response format is owned by AstrBot |
+| 403 | `forbidden`: plugin/health feature disabled or write-origin check failed; the host may also reject authentication |
+| 404 | Wrong plugin URL or server version without this endpoint |
+| 409 | `device_changed`, `snapshot_conflict`, `snapshot_older_than_current` |
+| 413 | `payload_too_large` |
+| 503 | `storage_unavailable` |
+
+The server stores only the latest snapshot under plugin data, separately from
+the xiaomi-sync database. Health queries and the care bridge use the same
+`health_data_source`: `auto` chooses a fresh snapshot from the current phone,
+otherwise SQLite; `health_connect` chooses only the snapshot; `health_db` chooses
+only SQLite. Values from different sources are never added. A snapshot is fresh
+for at most three hours after capture, which does not establish the recency of
+every measurement. Consumers must inspect both `source` and the daily dates.
 
 ## State
 
