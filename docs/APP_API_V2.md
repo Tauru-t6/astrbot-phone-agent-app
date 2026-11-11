@@ -1,7 +1,8 @@
-# AstrBot Phone Agent App API v2
+# Phone Control App API
 
 This document describes the app-facing dashboard routes. The command envelope
-sent to Android remains schema version 1 and is unchanged.
+sent to Android remains schema version 1; 0.4.0 adds structured UI observation
+and action commands with explicit target-device binding.
 
 The routes are registered below the plugin prefix
 `/astrbot_plugin_phone_agent`. AstrBot's dashboard authentication protects the
@@ -23,6 +24,111 @@ Notification ingestion returns `503 storage_unavailable` on persistence failure
 and restores its previous in-memory state, so the same batch can be retried.
 Private chat task approvals do not require the night guard to be enabled.
 
+## Bounded UI tasks
+
+Added in plugin 0.10.0 / App 0.4.0. `enable_ui_tasks`,
+`enable_task_execute`, and `enable_observe_tool` must be enabled, with the App
+backend and target package permitted by `ui_task_allowed_packages`. A model
+must be available. The app never silently changes local approval settings.
+
+`POST /device/register` includes `device_kind: "personal" | "bot"` alongside
+the existing registration fields. The personal APK retains its package and
+device ID; the independent Bot APK uses `com.tauru.phonecontrol.bot` and a
+`bot-` device-ID prefix. They have separate data and can be installed together.
+A Bot may register before any personal phone. Registration never lets a Bot
+replace the personal phone used for health and care.
+
+Only the personal app registers a notification-listener service. Its
+`POST /app/notifications` includes `device_id` with the notification batch
+for device-ownership checks. The Bot manifest removes this service and its
+client refuses notification uploads, independent of saved forwarding settings.
+
+Use `GET /app/state?device_id=<requesting-phone>` to retrieve device-scoped
+tasks, plus the following capability metadata:
+
+```json
+{
+  "ui_task": {
+    "supported": true, "enabled": true, "max_steps": 8,
+    "packages": [{"name":"哔哩哔哩", "package":"tv.danmaku.bili"}]
+  },
+  "devices": [
+    {"device_id":"phone-example", "label":"我的手机", "role":"personal", "device_kind":"personal", "online":true, "app_version":"0.4.0"},
+    {"device_id":"bot-phone-example", "label":"Bot 手机", "role":"bot", "device_kind":"bot", "online":true, "app_version":"0.4.0"}
+  ],
+  "default_device_id": "phone-example",
+  "task_approvals": [], "task_runs": []
+}
+```
+
+`role` is `personal`, `bot`, or `unassigned`. The personal role is pinned;
+the first Bot receives the Bot role, with additional Bot devices initially
+unassigned. `POST /app/device/role` accepts
+`{"device_id":"...","role":"bot","label":"执行手机"}` after an explicit
+user action. One Bot role is active at a time. Assign `unassigned` to release
+it before enabling another. Labels are at most 60 characters. Personal devices
+can be renamed while retaining their role, and Bot devices cannot become
+personal. `default_device_id` may be empty when only a Bot has registered;
+the app selects its own registered ID as its initial target.
+
+`POST /app/ui-task/propose` creates a proposal without executing it:
+
+```json
+{
+  "goal": "打开哔哩哔哩并搜索哆啦A梦，显示相关视频结果",
+  "package": "tv.danmaku.bili",
+  "allowed_texts": ["哆啦A梦"],
+  "success_texts": ["哆啦A梦", "综合", "视频"],
+  "max_steps": 8,
+  "completion_mode": "search_results",
+  "device_id": "bot-phone-example",
+  "requester_device_id": "phone-example"
+}
+```
+
+The response is `{success, run, approval}`. `goal` is 1–500 characters;
+each text list has at most five items of 1–200 characters, without control
+characters, and `success_texts` must be nonempty. `max_steps` is bounded by
+the advertised server limit. `completion_mode` is `visible_text` or
+`search_results`. Every success text must be visible in noneditable content;
+search mode also requires a result title containing the query. Text merely
+present in a search box does not establish success.
+
+UI approvals include `goal`, `mode: "ui"`, `device_id`,
+`requester_device_id`, and a `scope` with target package, allowed texts,
+success texts, completion mode, step limit, device ID and device role. The app
+shows all of these before approval and disables incomplete scopes. It never
+offers the compact overlay's one-tap approval for UI tasks. A notification
+only invites the user to open the full task sheet.
+
+`POST /app/task/approve {"approval_id":"..."}` may return HTTP 202 with
+`{success:true,run:{...},status:"running"}`. This means started, not complete.
+Poll state for the final run. `POST /app/task/reject` refuses a proposal;
+`POST /app/task/cancel {"run_id":"..."}` requests a stop. Already completed
+device actions cannot be rolled back. The app shows only tasks it requested
+or that target its own device; legacy rows without device IDs are accepted
+only for non-UI tasks on servers listing at most one phone.
+
+Runs have `summary.mode: "ui"`, `summary.ui_scope`, and
+`summary.requester_device_id`. Task records contain step outcomes and stop
+reasons. Raw `ui_snapshot` results are transient observations and are not
+written into app task history or the timeline; `ui_action` records use fixed
+action summaries instead of command output.
+
+On the execution phone, `ui_snapshot` and `ui_action` require local
+confirmation by default. Continuous execution requires the user to explicitly
+enable their persistent no-confirmation switches in Privacy & Automation.
+Those switches trust all corresponding commands from the configured server;
+they are not limited to one task. Server-side task approval remains separate.
+Without them, per-command prompts can time out or invalidate a page snapshot.
+
+Text input additionally requires the user to manually enable the Phone Control
+input method via Android's input-method settings. The executor uses it only
+for the approved input, then restores the previous input method. It does not
+use a public text-injection broadcast receiver. Page content is sent to the
+configured task model; unsupported pages, stale observations, sensitive
+controls, missing progress or exhausted step budgets stop execution.
+
 ## Health Connect summaries
 
 Added in plugin 0.9.2 with App 0.3.27. Plugin 0.9.3 accepts one validated
@@ -31,7 +137,8 @@ Dashboard JWT at `/api/plug/astrbot_plugin_phone_agent`; the phone shared Token
 does not authenticate these routes. Browser cross-origin writes are rejected.
 
 `POST /app/health/snapshot` requires the plugin and `enable_health_tools` to be
-enabled, and `device_id` must match the currently registered phone. The App
+enabled, and `device_id` must match the registered personal phone. Bot devices
+cannot supply the personal health snapshot. The personal App
 uploads only after the user grants Health Connect reads and enables the separate
 server-sync switch. Example (generate the capture time, dates and ID for each read):
 

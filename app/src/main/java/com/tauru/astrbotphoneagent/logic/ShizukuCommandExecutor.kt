@@ -9,11 +9,13 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.BatteryManager
+import android.os.SystemClock
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
 
@@ -75,6 +77,8 @@ class ShizukuCommandExecutor(private val context: Context) {
                 "home" -> shellOnce("input keyevent 3")
                 "back" -> shellOnce("input keyevent 4")
                 "screen_text" -> screenText()
+                "ui_snapshot" -> uiSnapshot(args)
+                "ui_action" -> uiAction(args)
                 "tap" -> tap(args)
                 "long_press" -> longPress(args)
                 "swipe" -> swipe(args)
@@ -91,6 +95,8 @@ class ShizukuCommandExecutor(private val context: Context) {
                 "screenshot" -> screenshot()
                 else -> CommandOutcome.Fail("unsupported_action", "unhandled action: " + action)
             }
+        } catch (e: UiFailure) {
+            CommandOutcome.Fail(e.code, e.message ?: "界面操作失败")
         } catch (e: CommandException) {
             CommandOutcome.Fail(e.errorCode, e.message ?: "command failed")
         } catch (e: InterruptedException) {
@@ -143,6 +149,134 @@ class ShizukuCommandExecutor(private val context: Context) {
             return DEFAULT_DISPLAY_WIDTH to DEFAULT_DISPLAY_HEIGHT
         }
         return width to height
+    }
+
+    // ---------- bound UI observations and actions ----------
+
+    private val uiLease = UiSnapshotLease()
+    private val componentPattern = Regex("[A-Za-z][A-Za-z0-9_.]*/[A-Za-z0-9_.]+")
+
+    /** A live activity probe, deliberately without the stale UsageStats fallback. */
+    private fun liveUiPackage(): String {
+        val value = shell("dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity|ResumedActivity' | head -3", 3_000L)
+        if (value !is CommandOutcome.Ok) throw UiFailure("ui_foreground_unavailable", "无法确认当前前台应用")
+        return PACKAGE_REGEX.find(value.output)?.value ?: throw UiFailure("ui_foreground_unavailable", "无法确认当前前台应用")
+    }
+
+    private fun currentInputMethod(): String {
+        val value = (shell("settings get secure default_input_method", 2_000L) as? CommandOutcome.Ok)?.output?.trim().orEmpty()
+        return value.takeIf(componentPattern::matches).orEmpty()
+    }
+
+    private fun freshUi(expected: String): UiSnapshot {
+        if (!UiSnapshotParser.validPackage(expected)) throw UiFailure("bad_args", "缺少有效目标应用")
+        if (screenInteractiveState() != true) throw UiFailure("ui_screen_off", "屏幕未亮起，请解锁后重试")
+        if (liveUiPackage() != expected) throw UiFailure("ui_foreground_changed", "前台应用不在本次任务范围")
+        val path = "/data/local/tmp/phone_control_ui_${UUID.randomUUID().toString().replace("-", "")}.xml"
+        val captured: String
+        try {
+            val dump = shell("timeout 8 uiautomator dump --compressed $path", 10_000L)
+            if (dump !is CommandOutcome.Ok) throw UiFailure("ui_snapshot_unavailable", "界面读取超时或失败，请保持目标应用在前台")
+            val size = (shell("wc -c < $path", 2_000L) as? CommandOutcome.Ok)?.output?.trim()?.toIntOrNull()
+                ?: throw UiFailure("ui_snapshot_invalid", "本次界面文件无效")
+            if (size !in 1..UiSnapshotParser.MAX_BYTES) throw UiFailure("ui_snapshot_too_large", "界面数据过大")
+            val read = shell("cat $path", 2_000L)
+            if (read !is CommandOutcome.Ok) throw UiFailure("ui_snapshot_invalid", "无法读取本次界面文件")
+            captured = read.output
+        } finally {
+            // Generated path contains only a fixed prefix and hexadecimal UUID.
+            shell("rm -f $path", 2_000L)
+        }
+        if (liveUiPackage() != expected) throw UiFailure("ui_foreground_changed", "读取期间前台应用已变化")
+        val sizeText = (shell("wm size", 2_000L) as? CommandOutcome.Ok)?.output.orEmpty()
+        val sizeMatch = Regex("(\\d+)\\s*x\\s*(\\d+)").findAll(sizeText).lastOrNull()
+            ?: throw UiFailure("ui_display_unknown", "无法读取屏幕尺寸")
+        val width = sizeMatch.groupValues[1].toIntOrNull() ?: 0
+        val height = sizeMatch.groupValues[2].toIntOrNull() ?: 0
+        return UiSnapshotParser.parse(captured, expected, width, height, SystemClock.elapsedRealtime(),
+            inputMethodPackage = currentInputMethod().substringBefore('/'))
+    }
+
+    private fun uiSnapshot(args: Map<String, String>): CommandOutcome {
+        uiLease.invalidate()
+        if (args.keys.any { it != "expected_package" }) throw UiFailure("bad_args", "界面读取含未支持参数")
+        val snapshot = freshUi(args["expected_package"].orEmpty())
+        uiLease.remember(snapshot)
+        return CommandOutcome.Ok(JSONObject(snapshot.wire()).toString())
+    }
+
+    private fun uiAction(args: Map<String, String>): CommandOutcome {
+        UiActionPolicy.validate(args)
+        val expected = args.getValue("expected_package")
+        val previous = uiLease.take(args.getValue("snapshot_id"), expected, SystemClock.elapsedRealtime())
+        val fresh = freshUi(expected)
+        if (SystemClock.elapsedRealtime() - previous.capturedMonotonicMs > 30_000)
+            throw UiFailure("ui_snapshot_expired", "界面快照已过期，请重新观察")
+        val node = UiActionPolicy.target(previous, fresh, args)
+        if (liveUiPackage() != expected) throw UiFailure("ui_foreground_changed", "动作前前台应用已变化")
+        val result = when (args.getValue("kind")) {
+            "tap" -> shell("input tap ${(node!!.bounds[0] + node.bounds[2]) / 2} ${(node.bounds[1] + node.bounds[3]) / 2}", 3_000L)
+            "scroll" -> {
+                val b = node!!.bounds
+                val cx = (b[0] + b[2]) / 2; val cy = (b[1] + b[3]) / 2
+                val dx = (b[2] - b[0]) / 4; val dy = (b[3] - b[1]) / 4
+                if (dx < 10 || dy < 10) throw UiFailure("ui_action_blocked", "滚动目标过小")
+                val points = when (args["direction"]) {
+                    "down" -> listOf(cx, cy + dy, cx, cy - dy)
+                    "up" -> listOf(cx, cy - dy, cx, cy + dy)
+                    "right" -> listOf(cx - dx, cy, cx + dx, cy)
+                    else -> listOf(cx + dx, cy, cx - dx, cy)
+                }
+                shell("input swipe ${points.joinToString(" ")} 300", 3_000L)
+            }
+            "input_text" -> uiInput(expected, node!!, args.getValue("text"))
+            else -> shell("input keyevent 4", 3_000L)
+        }
+        if (result is CommandOutcome.Fail) return CommandOutcome.Fail(result.errorCode, "界面动作失败；请重新观察，不要自动重放")
+        return CommandOutcome.Ok(JSONObject().put("dispatched", true).put("verified", false)
+            .put("snapshot_id", previous.id).put("kind", args.getValue("kind"))
+            .put("requires_new_observation", true).toString())
+    }
+
+    private fun uiInput(expectedPackage: String, approvedNode: UiNode, text: String): CommandOutcome {
+        val ime = context.packageName + "/" + UiInputMethodService::class.java.name
+        val oldIme = currentInputMethod()
+        if (oldIme.isBlank()) throw UiFailure("needs_input_method", "请先在系统中启用 Phone Control 输入法")
+        val enabled = (shell("ime list -s", 2_000L) as? CommandOutcome.Ok)?.output.orEmpty().lines().map(String::trim)
+        val shortIme = android.content.ComponentName(context, UiInputMethodService::class.java).flattenToShortString()
+        if (ime !in enabled && shortIme !in enabled) throw UiFailure("needs_input_method", "请先在系统输入法设置中启用 Phone Control 输入，随后重新发起任务")
+        val switched = oldIme != ime && oldIme != shortIme
+        var result: CommandOutcome = CommandOutcome.Fail("ui_input_failed", "未完成文字输入")
+        try {
+            if (switched && shell("ime set " + InputCommands.quote(ime), 3_000L) is CommandOutcome.Fail)
+                throw UiFailure("needs_input_method", "无法切换到已启用的 Phone Control 输入法")
+            val deadline = SystemClock.elapsedRealtime() + 4_000
+            while (!UiInputMethodService.readyFor(expectedPackage) && SystemClock.elapsedRealtime() < deadline) Thread.sleep(80)
+            val editorSession = UiInputMethodService.sessionFor(expectedPackage)
+                ?: throw UiFailure("ui_input_failed", "输入连接尚未就绪，请重新观察")
+            if (liveUiPackage() != expectedPackage) throw UiFailure("ui_foreground_changed", "输入前前台应用已变化")
+            // Input method switching may resize the page. Match the same one
+            // focused editor by identity and visible value, never coordinates.
+            val afterIme = freshUi(expectedPackage)
+            val editors = afterIme.nodes.filter { it.editable && it.focused && !it.password && it.enabled }
+            val editor = editors.singleOrNull()
+            if (editor == null || editor.resourceId != approvedNode.resourceId || editor.className != approvedNode.className ||
+                editor.text != approvedNode.text || editor.description != approvedNode.description)
+                throw UiFailure("ui_snapshot_changed", "输入法切换后目标输入框已改变，请重新观察")
+            result = if (UiInputMethodService.commitApprovedText(expectedPackage, text, approvedNode.text, editorSession)) CommandOutcome.Ok("ok")
+                else CommandOutcome.Fail("ui_input_failed", "输入连接不可用或为敏感输入框，请重新观察")
+        } finally {
+            if (switched) {
+                // Cancellation interrupts the worker. Clear that flag only for
+                // the bounded restore, then preserve it for runInterruptible.
+                val wasInterrupted = Thread.interrupted()
+                val restored = try { shell("ime set " + InputCommands.quote(oldIme), 3_000L) }
+                    finally { if (wasInterrupted) Thread.currentThread().interrupt() }
+                if (restored is CommandOutcome.Fail && result is CommandOutcome.Ok)
+                    result = CommandOutcome.Fail("ui_input_restore_failed", "文字可能已输入，但恢复原输入法失败，请手动恢复并重新观察")
+            }
+        }
+        return result
     }
 
     // ---------- shell ----------

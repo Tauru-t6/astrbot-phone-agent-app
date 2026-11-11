@@ -15,8 +15,14 @@ jobs:
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
       - name: Build and validate
-        run: ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --stacktrace
+        run: >-
+          ./gradlew
+          :app:assemblePersonalDebug :app:assembleBotDebug
+          :app:testPersonalDebugUnitTest :app:testBotDebugUnitTest
+          :app:lintPersonalDebug :app:lintBotDebug
+          --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: android-debug
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/*/debug/*.apk
+          if-no-files-found: error

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -26,22 +27,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.data.AppDiagnostics
 import com.tauru.astrbotphoneagent.data.AppState
 import com.tauru.astrbotphoneagent.data.ConnectionState
+import com.tauru.astrbotphoneagent.data.TaskApproval
 import kotlinx.coroutines.launch
 
-/**
- * 自主功能总览与诊断。
- *
- * 消费 GLM 已交付的真实契约：
- *  - 连接层（直连 / Relay / 离线 / 未知）
- *  - AppDiagnostics（插件连接、Shizuku、最近同步、待提醒、最近错误）
- *  - AutonomyOverview（夜间守护 phase/dry_run/window、手动睡眠、受限包列表、features）
- *
- * 仍未交付：CareSettings、ScopedGrant、DecisionRecord、TaskRun、ApprovalRequest、
- * ObservationRef。本页不编造这些状态，逐项标注「当前版本暂不支持」。
- */
+/** Server-reported task, approval and care status. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
@@ -51,6 +44,13 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val scope = rememberCoroutineScope()
     var decisionNotice by remember { mutableStateOf("") }
+    var showUiTask by remember { mutableStateOf(false) }
+    var decisionBusy by remember { mutableStateOf(false) }
+
+    if (showUiTask) {
+        UiTaskSheet(appState) { showUiTask = false }
+        return
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -64,10 +64,25 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
         ) {
             Text("自主功能", style = MaterialTheme.typography.headlineSmall)
             Text(
-                "主动关怀与自主手机任务的业务契约由后端统一交付。以下展示当前真实可用的能力，未交付的能力明确标注，不以开关或预览冒充已生效。",
+                if (BuildConfig.IS_BOT_DEVICE) "查看手机任务的执行范围与结果，管理审批。" else "查看手机任务的执行范围与结果，管理审批，并了解夜间守护与关怀状态。",
                 style = MaterialTheme.typography.bodySmall,
                 color = muted,
             )
+
+            HorizontalDivider()
+            Text("界面任务", style = MaterialTheme.typography.titleMedium)
+            val uiTask = overview?.uiTask
+            CapabilityRow(
+                title = "逐步操作与核验",
+                value = when {
+                    !diagnostics.pluginConnected -> "未连接"
+                    uiTask?.supported != true -> "待服务器支持"
+                    !uiTask.enabled || overview?.taskExecuteEnabled != true -> "未开启"
+                    else -> "可发起"
+                },
+                detail = "选择一台手机和一个 App，设置允许输入的文字与步骤上限。执行前需批准；关键步骤和无法确认的结果会停下交给你。",
+            )
+            Button(onClick = { showUiTask = true }, modifier = Modifier.fillMaxWidth()) { Text("发起手机界面任务") }
 
             HorizontalDivider()
             Text("能力状态", style = MaterialTheme.typography.titleMedium)
@@ -97,6 +112,7 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                 CapabilityRow(title = "最近错误", value = it, detail = null)
             }
 
+            if (!BuildConfig.IS_BOT_DEVICE) {
             HorizontalDivider()
             Text("夜间自动守护", style = MaterialTheme.typography.titleMedium)
             // R05：运行状态与残留限制分开。when 只负责显示未知/开启/关闭；
@@ -199,25 +215,33 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                 }
             }
 
-            val pendingApprovals = overview?.taskApprovals.orEmpty().filter { it.status == "pending" }
+            }
+
+            val pendingApprovals = overview?.taskApprovals.orEmpty().filter {
+                it.status == "pending" && it.expiresAt > System.currentTimeMillis() / 1000.0
+            }
             if (pendingApprovals.isNotEmpty()) {
                 HorizontalDivider()
                 Text("待你决定", style = MaterialTheme.typography.titleMedium)
                 pendingApprovals.forEach { approval ->
                     CapabilityRow(
-                        title = approval.actions.joinToString("、") { taskActionLabel(it) },
+                        title = approval.goal.ifBlank { approval.actions.joinToString("、") { taskActionLabel(it) } },
                         value = approvalCountdown(approval.expiresAt),
-                        detail = "批准后才执行；不点就自动放弃。",
+                        detail = approvalDetails(approval, overview?.devices.orEmpty()),
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedButton(onClick = {
+                        OutlinedButton(enabled = !decisionBusy && approvalReviewable(approval), onClick = {
+                            decisionBusy = true
                             scope.launch {
-                                decisionNotice = appState.approveTask(approval.approvalId).message
+                                try { decisionNotice = appState.approveTask(approval.approvalId).message }
+                                finally { decisionBusy = false }
                             }
-                        }) { Text("允许这一次") }
-                        TextButton(onClick = {
+                        }) { Text(if (decisionBusy) "正在提交…" else "允许这一次") }
+                        TextButton(enabled = !decisionBusy, onClick = {
+                            decisionBusy = true
                             scope.launch {
-                                decisionNotice = appState.rejectTask(approval.approvalId, "用户在 App 里拒绝").message
+                                try { decisionNotice = appState.rejectTask(approval.approvalId, "用户在 App 里拒绝").message }
+                                finally { decisionBusy = false }
                             }
                         }) { Text("拒绝") }
                     }
@@ -226,6 +250,8 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                     Text(decisionNotice, style = MaterialTheme.typography.bodySmall, color = muted)
                 }
             }
+            if (decisionNotice.isNotBlank() && pendingApprovals.isEmpty()) Text(decisionNotice,
+                style = MaterialTheme.typography.bodySmall, color = muted)
 
             val context = androidx.compose.ui.platform.LocalContext.current
             val canOverlay = com.tauru.astrbotphoneagent.logic.ApprovalOverlay.canDraw(context)
@@ -240,7 +266,7 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                     else -> "已开启 · 弹出 $overlayAttempts 次"
                 },
                 detail = overlayError.ifBlank {
-                    if (!canOverlay) "开启后，需要你点头的任务会直接弹在当前应用上方。" else null
+                    if (!canOverlay) "普通任务可用悬浮窗提示。界面任务需在 App 内核对完整范围后批准。" else "界面任务在 App 内确认；通知用于提醒你查看。"
                 },
             )
             if (!canOverlay) {
@@ -264,6 +290,11 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                         title = taskRun.goal.ifBlank { "未命名任务" },
                         value = taskStatusLabel(taskRun),
                         detail = buildString {
+                            if (taskRun.mode == "ui") {
+                                val device = overview?.devices?.firstOrNull { it.deviceId == taskRun.deviceId }
+                                append("界面任务 · ${device?.label ?: taskRun.deviceId} · ${taskRun.packageName}")
+                                append("\n最多 ${taskRun.maxSteps} 步 · 模型评估 ${taskRun.modelCalls} 次")
+                            }
                             if (taskRun.dryRun) append("试跑")
                             if (taskRun.executed > 0) {
                                 if (isNotEmpty()) append(" · ")
@@ -276,8 +307,18 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                                 append("被拒：${taskRefusedLabel(taskRun.refused)}")
                             }
                             taskRun.steps.forEach { step -> append("\n${taskStepLabel(step)}") }
+                            if (taskRun.lastError.isNotBlank()) append("\n${taskRefusedLabel(taskRun.lastError)}")
                         },
                     )
+                    if (taskRun.status in setOf("planning", "running", "executing", "verifying", "waiting_approval")) {
+                        TextButton(enabled = !decisionBusy, onClick = {
+                            decisionBusy = true
+                            scope.launch {
+                                try { decisionNotice = appState.cancelServerTask(taskRun.runId).message }
+                                finally { decisionBusy = false }
+                            }
+                        }) { Text("停止这项任务") }
+                    }
                 }
             }
             if (overview?.taskExecuteEnabled == false) {
@@ -289,11 +330,14 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
             }
 
             HorizontalDivider()
-            Text("后续版本", style = MaterialTheme.typography.titleMedium)
-            UnsupportedRow(
-                title = "自主手机任务（第 4 段）",
-                detail = "后台审批（系统通知与深链）、点击/输入类动作尚未开放。现阶段执行器只跑 open_app/home/back 这类可核验动作，且默认拒绝在用户正在使用手机时执行。",
+            Text("操作与审批说明", style = MaterialTheme.typography.titleMedium)
+            CapabilityRow(
+                title = "已提供的操作",
+                value = "按授权执行",
+                detail = "支持点击、输入、滑动、返回、打开或暂停应用等结构化动作。界面任务会根据当前页面选择下一步；实际可用范围以服务器开关、设备权限和本次审批为准。",
             )
+            Text("目前通知会打开 App，随后可进入自主功能处理任务；界面任务的确认会展示完整范围。若页面未暴露可定位的控件、涉及关键操作或结果无法核验，任务会停止。",
+                style = MaterialTheme.typography.bodySmall, color = muted)
         }
     }
 }
@@ -321,25 +365,24 @@ private fun CapabilityRow(title: String, value: String, detail: String?) {    va
     }
 }
 
-@Composable
-private fun UnsupportedRow(title: String, detail: String) {
-    val colors = MaterialTheme.colorScheme
-    Column(Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
-            Text(
-                "当前版本暂不支持",
-                modifier = Modifier.padding(start = 12.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = colors.onSurfaceVariant,
-            )
-        }
-        Text(
-            detail,
-            modifier = Modifier.padding(top = 4.dp),
-            style = MaterialTheme.typography.bodySmall,
-            color = colors.onSurfaceVariant.copy(alpha = 0.85f),
-        )
+private fun approvalReviewable(approval: TaskApproval): Boolean = approval.mode != "ui" ||
+    (approval.goal.isNotBlank() && approval.deviceId.isNotBlank() && approval.packageName.isNotBlank() &&
+        approval.deviceRole in setOf("personal", "bot") && approval.successTexts.size in 1..5 &&
+        approval.allowedTexts.size <= 5 && (approval.allowedTexts + approval.successTexts).all { it.length in 1..200 && it.none(Char::isISOControl) } &&
+        approval.completionMode in setOf("visible_text", "search_results") && approval.maxSteps in 1..12)
+
+private fun approvalDetails(approval: TaskApproval, devices: List<com.tauru.astrbotphoneagent.data.RegisteredPhone>): String {
+    if (approval.mode != "ui") return "批准后才执行；不点就自动放弃。"
+    if (!approvalReviewable(approval)) return "任务范围不完整，暂不可批准。请刷新或重新创建任务。"
+    val device = devices.firstOrNull { it.deviceId == approval.deviceId }
+    return buildString {
+        append("执行设备：${device?.label ?: approval.deviceId} · ${deviceRoleLabel(approval.deviceRole)}")
+        append("\n目标 App：${approval.packageName}")
+        append("\n允许输入：${approval.allowedTexts.joinToString("、").ifBlank { "不输入文字" }}")
+        append("\n完成页面须同时出现：${approval.successTexts.joinToString("、")}")
+        if (approval.completionMode == "search_results") append("；结果列表还须出现包含搜索词的标题")
+        append("\n最多 ${approval.maxSteps} 步；只操作这一个 App。页面内容会交给你配置的模型用于规划。")
+        append("\n登录、支付、消息发布等关键步骤会暂停。允许本次任务不代表允许这些后续操作。")
     }
 }
 
@@ -379,6 +422,11 @@ private fun taskActionLabel(action: String): String = when (action) {
     "lock_screen" -> "锁屏"
     "tap" -> "点击"
     "input_text" -> "输入文字"
+    "ui_snapshot" -> "观察当前页面"
+    "ui_action" -> "在目标 App 内操作"
+    "ui_tap" -> "点击页面控件"
+    "ui_input" -> "输入批准的文字"
+    "ui_scroll" -> "滚动页面"
     else -> action
 }
 
@@ -397,12 +445,20 @@ private fun taskStatusLabel(run: com.tauru.astrbotphoneagent.data.TaskRunSummary
     "cancelled" -> "已取消"
     "running", "executing", "verifying" -> "执行中"
     "planning" -> "规划中"
+    "waiting_approval" -> if (run.lastError.isBlank()) "等待确认" else "需要你处理"
+    "needs_user", "paused" -> "需要你处理"
     else -> run.status.ifBlank { "未知" }
 }
 
 private fun taskRefusedLabel(reason: String): String = when (reason) {
     "user_active" -> "你当时正在用手机"
     "stale_observation" -> "观察过期"
+    "snapshot_stale", "stale_snapshot" -> "页面已变化，需要重新观察"
+    "sensitive_action", "sensitive_screen", "needs_user" -> "遇到关键步骤，请由你处理"
+    "step_limit", "budget_exhausted" -> "已达到本次步骤上限"
+    "no_progress", "repeated_state" -> "页面没有进展，任务已停止"
+    "completion_not_observed" -> "尚未观察到完成条件"
+    "device_changed" -> "执行设备状态已变化"
     else -> reason
 }
 
@@ -416,7 +472,7 @@ private fun taskStepLabel(step: com.tauru.astrbotphoneagent.data.TaskRunStep): S
         "suspend_app" -> "暂停应用"
         "unsuspend_app" -> "恢复应用"
         "screenshot" -> "截图"
-        else -> step.action
+        else -> taskActionLabel(step.action)
     }
     val status = when (step.status) {
         "done" -> "通过"

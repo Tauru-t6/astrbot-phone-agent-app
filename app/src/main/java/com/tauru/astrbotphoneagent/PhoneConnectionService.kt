@@ -22,7 +22,7 @@ class PhoneConnectionService : Service() {
         val notification = NotificationCompat.Builder(this, "phone_connection")
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setContentTitle("设备连接服务")
-            .setContentText("同步提醒，接收手机操作请求")
+            .setContentText(if (BuildConfig.IS_BOT_DEVICE) "接收手机操作请求" else "同步提醒，接收手机操作请求")
             .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true).build()
         try {
             // A01: startForeground can throw SecurityException on Android 14+

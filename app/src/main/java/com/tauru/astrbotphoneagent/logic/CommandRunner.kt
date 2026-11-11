@@ -7,6 +7,7 @@ import android.location.Location
 import android.location.LocationManager
 import android.os.SystemClock
 import android.util.AtomicFile
+import com.tauru.astrbotphoneagent.BuildConfig
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationCompat
 import androidx.core.location.LocationManagerCompat
@@ -16,6 +17,7 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
+import java.security.MessageDigest
 import kotlin.coroutines.resume
 
 /** Serializes phone mutations and deduplicates retries across transports/restarts. */
@@ -32,14 +34,20 @@ class CommandRunner(private val context: Context, private val executor: ShizukuC
 
     suspend fun run(envelope: CommandEnvelope): ResultEnvelope = withContext(Dispatchers.IO) {
         gate.withLock {
-            val identity = protocolJson.encodeToString(CommandEnvelope.serializer(), envelope)
+            if (targetDeviceMismatch(envelope, DeviceIdentity.deviceId(context), requireTargetDevice = BuildConfig.IS_BOT_DEVICE))
+                return@withLock envelope.result(false, code = "device_mismatch", error = "命令目标不是当前手机")
+            val serializedIdentity = protocolJson.encodeToString(CommandEnvelope.serializer(), envelope)
+            val identity = if (envelope.action in setOf("ui_snapshot", "ui_action"))
+                MessageDigest.getInstance("SHA-256").digest(serializedIdentity.toByteArray()).joinToString("") { "%02x".format(it) }
+                else serializedIdentity
             val saved = receipts.optJSONObject(envelope.commandId)
             if (saved != null) {
                 if (saved.optString("identity") != identity) return@withLock envelope.result(false, code = "id_conflict", error = "命令 ID 已被使用")
                 val cached = runCatching { protocolJson.decodeFromString(ResultEnvelope.serializer(), saved.getString("result")) }.getOrNull()
                 if (cached != null) return@withLock cached
             }
-            val invalid = commandValidationError(envelope, System.currentTimeMillis() / 1000.0)
+            val invalid = commandValidationError(envelope, System.currentTimeMillis() / 1000.0,
+                requireTargetDevice = BuildConfig.IS_BOT_DEVICE)
             if (invalid != null) return@withLock envelope.result(false, code = "invalid_command", error = invalid)
             val interrupted = envelope.result(false, code = "interrupted", error = "上次执行被中断，结果未知，请检查后重新发起")
             // Mark before changing phone state. A killed process must not replay it.
@@ -69,8 +77,13 @@ class CommandRunner(private val context: Context, private val executor: ShizukuC
     }
 
     private fun record(envelope: CommandEnvelope, identity: String, result: ResultEnvelope) {
+        // UI text never becomes a persisted command-receipt archive. A replay
+        // after a snapshot response loss must explicitly request a fresh view.
+        val stored = if (envelope.action == "ui_snapshot" && result.success)
+            result.copy(success = false, output = null, errorCode = "ui_snapshot_expired", error = "请重新读取界面")
+            else result
         receipts.put(envelope.commandId, JSONObject().put("identity", identity)
-            .put("result", protocolJson.encodeToString(ResultEnvelope.serializer(), result)))
+            .put("result", protocolJson.encodeToString(ResultEnvelope.serializer(), stored)))
         // Results are only reusable within the bounded command lifetime.
         val cutoff = System.currentTimeMillis() / 1000.0 - 86400
         receipts.keys().asSequence().toList().forEach { key ->

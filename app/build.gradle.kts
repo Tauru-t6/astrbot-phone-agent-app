@@ -13,8 +13,22 @@ android {
         applicationId = "com.tauru.astrbotphoneagent"
         minSdk = 26
         targetSdk = 34
-        versionCode = 31
-        versionName = "0.3.28"
+        versionCode = 32
+        versionName = "0.4.0"
+    }
+
+    flavorDimensions += "deviceRole"
+    productFlavors {
+        create("personal") {
+            dimension = "deviceRole"
+            applicationId = "com.tauru.astrbotphoneagent"
+            buildConfigField("boolean", "IS_BOT_DEVICE", "false")
+        }
+        create("bot") {
+            dimension = "deviceRole"
+            applicationId = "com.tauru.phonecontrol.bot"
+            buildConfigField("boolean", "IS_BOT_DEVICE", "true")
+        }
     }
 
     buildFeatures {
@@ -87,7 +101,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
-    implementation("androidx.health.connect:connect-client:1.1.0")
+    // Only the personal APK contains Health Connect and its data readers.
+    add("personalImplementation", "androidx.health.connect:connect-client:1.1.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")

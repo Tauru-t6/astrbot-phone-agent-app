@@ -3,6 +3,7 @@ package com.tauru.astrbotphoneagent.logic
 import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import com.tauru.astrbotphoneagent.BuildConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +33,7 @@ class NotificationRelayService : NotificationListenerService() {
     private var flushJob: Job? = null
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        if (BuildConfig.IS_BOT_DEVICE) return
         val notification = sbn ?: return
         if (!isForwardable(notification)) return
         val entry = toEntry(notification) ?: return
@@ -44,6 +46,8 @@ class NotificationRelayService : NotificationListenerService() {
     }
 
     override fun onListenerConnected() {
+        if (BuildConfig.IS_BOT_DEVICE) return
+        DeviceIdentity.deviceId(applicationContext)
         // A02: launch the retry loop when the listener actually connects,
         // not in onCreate (which runs before the system grants access).
         scope.launch(Dispatchers.IO) { retryLoop() }
@@ -103,6 +107,7 @@ class NotificationRelayService : NotificationListenerService() {
     }
 
     private suspend fun doFlush() {
+        if (BuildConfig.IS_BOT_DEVICE) return
         val batch = synchronized(pending) {
             if (pending.isEmpty()) return
             val copy = pending.toList()
@@ -113,7 +118,7 @@ class NotificationRelayService : NotificationListenerService() {
         lastUploadAt = System.currentTimeMillis()
         try {
             if (!config.notificationForwarding()) return
-            client.postNotifications(batch)
+            client.postNotifications(batch, DeviceIdentity.deviceId(applicationContext))
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -127,6 +132,7 @@ class NotificationRelayService : NotificationListenerService() {
     }
 
     private suspend fun retryLoop() {
+        if (BuildConfig.IS_BOT_DEVICE) return
         while (true) {
             delay(RETRY_INTERVAL_MS)
             val batches: MutableList<Pair<List<JSONObject>, Int>> = synchronized(retryBatches) {
@@ -142,7 +148,7 @@ class NotificationRelayService : NotificationListenerService() {
             val failed: MutableList<Pair<List<JSONObject>, Int>> = mutableListOf()
             for ((batch, attempt) in batches) {
                 try {
-                    client.postNotifications(batch)
+                    client.postNotifications(batch, DeviceIdentity.deviceId(applicationContext))
                     // Success: drop the batch, do not re-queue.
                 } catch (cancelled: CancellationException) {
                     throw cancelled

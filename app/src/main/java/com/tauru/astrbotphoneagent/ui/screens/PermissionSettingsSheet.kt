@@ -1,9 +1,11 @@
 package com.tauru.astrbotphoneagent.ui.screens
 
 import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -12,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.data.ActionFeedback
 import com.tauru.astrbotphoneagent.data.AppDiagnostics
 import com.tauru.astrbotphoneagent.data.AppState
@@ -77,19 +80,54 @@ internal fun PermissionSettingsSheet(appState: AppState, onDismiss: () -> Unit) 
                 if (intent == null) feedback = ActionFeedback(false, "没有找到 Shizuku，请先安装并启动。") else openSettings(intent)
             }, modifier = Modifier.fillMaxWidth()) { Text("打开 Shizuku") }
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            PhoneControlInputMethodEntry()
             PermissionEntry("使用情况访问", "用于读取屏幕使用时间和应用使用统计。") {
                 openSettings(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS, Uri.parse("package:${context.packageName}")))
             }
-            PermissionEntry("通知读取权限", "把手机通知转发给 AstrBot，用于回答“有人找我吗”。需要单独授权。") {
+            if (!BuildConfig.IS_BOT_DEVICE) PermissionEntry("通知读取权限", "把手机通知转发给 AstrBot，用于回答“有人找我吗”。需要单独授权。") {
                 openSettings(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
             }
-            PermissionEntry("通知设置", "开启提醒通知，并调整声音与锁屏显示。") {
+            PermissionEntry("通知设置", if (BuildConfig.IS_BOT_DEVICE) "开启任务状态通知，并调整声音与锁屏显示。" else "开启提醒通知，并调整声音与锁屏显示。") {
                 openSettings(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
             }
             PermissionEntry("应用权限与设置", "管理位置、通知等系统权限。") {
                 openSettings(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
             }
         }
+    }
+}
+
+@Composable
+internal fun PhoneControlInputMethodEntry() {
+    val context = LocalContext.current
+    fun isEnabled(): Boolean = runCatching {
+        val manager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        manager.enabledInputMethodList.any {
+            it.serviceInfo.packageName == context.packageName &&
+                it.serviceInfo.name == "com.tauru.astrbotphoneagent.logic.UiInputMethodService"
+        }
+    }.getOrDefault(false)
+    var enabled by remember(context) { mutableStateOf(isEnabled()) }
+    var feedback by remember { mutableStateOf<ActionFeedback?>(null) }
+    DisposableEffect(context) {
+        val lifecycle = (context as? LifecycleOwner)?.lifecycle
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) enabled = isEnabled()
+        }
+        lifecycle?.addObserver(observer)
+        onDispose { lifecycle?.removeObserver(observer) }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Text("任务文字输入 · ${if (enabled) "已启用" else "待启用"}", style = MaterialTheme.typography.titleSmall)
+        Text("需要输入中文等文字时，请手动启用 Phone Control 输入法。它只处理任务已批准的文字，输入时临时切换，结束后恢复原输入法；不采集日常输入。",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedButton(onClick = {
+            feedback = try {
+                context.startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+                null
+            } catch (_: Exception) { ActionFeedback(false, "无法打开输入法设置，请在系统设置中手动启用 Phone Control 输入法。") }
+        }, modifier = Modifier.fillMaxWidth()) { Text(if (enabled) "管理输入法" else "打开设置并手动启用") }
+        feedback?.let { FeedbackNotice(it) }
     }
 }
 

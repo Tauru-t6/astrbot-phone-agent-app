@@ -1,5 +1,6 @@
 package com.tauru.astrbotphoneagent.logic
 
+import com.tauru.astrbotphoneagent.BuildConfig
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -149,6 +150,7 @@ class AstrBotClient(private val config: LogicConfig) {
         val url = config.pluginUrl().trimEnd('/') + "/device/register"
         val payload = JSONObject()
             .put("device_id", deviceId)
+            .put("device_kind", if (BuildConfig.IS_BOT_DEVICE) "bot" else "personal")
             .put("base_url", baseUrl)
             .put("base_urls", org.json.JSONArray(baseUrls))
             .put("app_version", config.appVersion)
@@ -166,7 +168,7 @@ class AstrBotClient(private val config: LogicConfig) {
     /** Timeline sync: fetch items newer than [since] from the plugin. */
     suspend fun fetchTimeline(since: Double, limit: Int = 50): List<JSONObject> {
         val url = config.pluginUrl().trimEnd('/') +
-            "/device/timeline?since=$since&limit=$limit"
+            "/device/timeline?since=$since&limit=$limit&device_id=${DeviceIdentity.deviceId()}"
         val request = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer ${config.pluginJwt()}")
@@ -177,43 +179,64 @@ class AstrBotClient(private val config: LogicConfig) {
         return (0 until items.length()).mapNotNull { items.optJSONObject(it) }
     }
 
-    suspend fun fetchAppState(): JSONObject = pluginRequest("/app/state").also {
+    suspend fun fetchAppState(): JSONObject = pluginRequest("/app/state?device_id=${DeviceIdentity.deviceId()}").also {
         if (it.optInt("api_version") < 2) throw ApiException("请先更新服务器插件")
     }
 
-    suspend fun fetchReminders(): JSONObject = pluginRequest("/app/reminders")
+    suspend fun fetchReminders(): JSONObject = pluginRequest("/app/reminders?device_id=${DeviceIdentity.deviceId()}")
 
     suspend fun createReminder(text: String, minutes: Int, requestId: String): JSONObject =
         pluginRequest("/app/reminders", JSONObject().put("text", text)
-            .put("minutes", minutes).put("request_id", requestId))
+            .put("minutes", minutes).put("request_id", requestId).put("device_id", DeviceIdentity.deviceId()))
 
     suspend fun cancelReminder(id: String): JSONObject =
-        pluginRequest("/app/reminders/cancel", JSONObject().put("reminder_id", id))
+        pluginRequest("/app/reminders/cancel", JSONObject().put("reminder_id", id).put("device_id", DeviceIdentity.deviceId()))
 
     /**
      * Dashboard route: start or stop the plugin's temporary app guard. The
      * plugin owns the protected-app list, so the app never guesses packages.
      */
     suspend fun setSleepMode(mode: String, minutes: Int): JSONObject =
-        pluginRequest("/sleep_mode", JSONObject().put("mode", mode).put("minutes", minutes))
+        pluginRequest("/sleep_mode", JSONObject().put("mode", mode).put("minutes", minutes).put("device_id", DeviceIdentity.deviceId()))
 
     /** Dashboard route: apply a one-shot policy to a single package. */
     suspend fun setAppPolicy(action: String, packageName: String, minutes: Int = 0): JSONObject =
         pluginRequest("/app_policy", JSONObject().put("action", action)
-            .put("package", packageName).put("minutes", minutes))
+            .put("package", packageName).put("minutes", minutes).put("device_id", DeviceIdentity.deviceId()))
 
-    /** Stage 4: decide a proposed task. Both routes answer with the updated record. */
+    /** Approval may return a running record; completion is observed via /app/state. */
     suspend fun approveTask(approvalId: String, allowWhileActive: Boolean = false): JSONObject =
         pluginRequest("/app/task/approve", JSONObject().put("approval_id", approvalId)
-            .put("allow_while_active", allowWhileActive))
+            .put("allow_while_active", allowWhileActive).put("requester_device_id", DeviceIdentity.deviceId()))
 
     suspend fun rejectTask(approvalId: String, reason: String = ""): JSONObject =
         pluginRequest("/app/task/reject", JSONObject().put("approval_id", approvalId)
-            .put("reason", reason))
+            .put("reason", reason).put("requester_device_id", DeviceIdentity.deviceId()))
+
+    suspend fun proposeUiTask(request: com.tauru.astrbotphoneagent.data.UiTaskRequest): JSONObject =
+        pluginRequest("/app/ui-task/propose", JSONObject()
+            .put("goal", request.goal)
+            .put("package", request.packageName)
+            .put("allowed_texts", org.json.JSONArray(request.allowedTexts))
+            .put("success_texts", org.json.JSONArray(request.successTexts))
+            .put("max_steps", request.maxSteps)
+            .put("completion_mode", request.completionMode)
+            .put("requester_device_id", DeviceIdentity.deviceId())
+            .also { if (request.deviceId.isNotBlank()) it.put("device_id", request.deviceId) })
+
+    suspend fun cancelServerTask(runId: String): JSONObject =
+        pluginRequest("/app/task/cancel", JSONObject().put("run_id", runId).put("requester_device_id", DeviceIdentity.deviceId()))
+
+    suspend fun setDeviceRole(deviceId: String, role: String, label: String): JSONObject =
+        pluginRequest("/app/device/role", JSONObject().put("device_id", deviceId)
+            .put("role", role).also { if (label.isNotBlank()) it.put("label", label) })
 
     /** App API: forward notifications captured on the phone to the plugin. */
-    suspend fun postNotifications(entries: List<JSONObject>): JSONObject =
-        pluginRequest("/app/notifications", JSONObject().put("notifications", org.json.JSONArray(entries)))
+    suspend fun postNotifications(entries: List<JSONObject>, deviceId: String = DeviceIdentity.deviceId()): JSONObject {
+        if (BuildConfig.IS_BOT_DEVICE) throw ApiException("Bot 版不支持通知转发")
+        return pluginRequest("/app/notifications", JSONObject().put("device_id", deviceId)
+            .put("notifications", org.json.JSONArray(entries)))
+    }
 
     /** Periodic device-status heartbeat for the night guard foreground source. */
     suspend fun postDeviceStatus(snapshot: DeviceStatusSnapshot): JSONObject {
@@ -242,6 +265,11 @@ class AstrBotClient(private val config: LogicConfig) {
     }
 
     private suspend fun pluginRequest(path: String, payload: JSONObject? = null): JSONObject {
+        // These legacy routes own personal-phone data/policies. A dedicated Bot
+        // must never fall back to the server's default personal device.
+        if (BuildConfig.IS_BOT_DEVICE && (path.startsWith("/app/reminders") ||
+                path.startsWith("/app/health/") || path == "/sleep_mode" || path == "/app_policy"))
+            throw ApiException("此功能仅适用于个人手机")
         val pluginUrl = config.pluginUrl()
         val token = config.pluginJwt()
         if (pluginUrl.isBlank() || token.isBlank()) throw ApiException("请先在设置中填写插件地址和令牌")
@@ -252,7 +280,7 @@ class AstrBotClient(private val config: LogicConfig) {
         val body = executeForBody(builder.build()) ?: throw ApiException("服务器返回了空响应")
         if (!body.optBoolean("success")) {
             val code = body.optString("error_code")
-            throw ApiException(ApiFailureMessage.forResponse(null, code, path.startsWith("/app/health/")))
+            throw ApiException(ApiFailureMessage.forResponse(null, code, path.startsWith("/app/health/"), isTaskPath(path)))
         }
         return body
     }
@@ -266,8 +294,16 @@ class AstrBotClient(private val config: LogicConfig) {
     suspend fun relayPoll(deviceId: String): CommandEnvelope? {
         val relayUrl = config.relayUrl()
         if (relayUrl.isBlank()) return null
-        val url = relayUrl + "/poll"
         val token = config.relayTokenValue()
+        if (BuildConfig.IS_BOT_DEVICE) {
+            // An old relay ignores targeting query parameters and can consume
+            // the personal phone's legacy task. Check capability before polling.
+            val health = executeForBody(Request.Builder().url(relayUrl + "/health")
+                .header("Authorization", "Bearer $token").get().build())
+            if (!supportsTargetedRelayPolling(health?.opt("success"), health?.opt("targeted_polling")))
+                throw RelayUpdateRequiredException()
+        }
+        val url = relayUrl + relayPollPath(deviceId, targetedOnly = BuildConfig.IS_BOT_DEVICE)
         val request = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $token")
@@ -276,6 +312,8 @@ class AstrBotClient(private val config: LogicConfig) {
             .build()
         val body = executeForBody(request) ?: return null
         val task = body.optJSONObject("task") ?: return null
+        if (BuildConfig.IS_BOT_DEVICE && task.optString("target_device_id") != deviceId)
+            throw RelayUpdateRequiredException()
         val message = task.optString("message")
         if (message.isBlank() || !message.trimStart().startsWith("{")) return null
         val envelope = runCatching {
@@ -321,6 +359,9 @@ class AstrBotClient(private val config: LogicConfig) {
         return executeForSuccess(request)
     }
 
+    private fun isTaskPath(path: String): Boolean = path.contains("/app/task/") ||
+        path.contains("/app/ui-task/") || path.contains("/app/device/role")
+
     private val relayTaskIds = ConcurrentHashMap<String, String>()
 
     fun relayTaskId(commandId: String): String? = relayTaskIds[commandId]
@@ -341,7 +382,7 @@ class AstrBotClient(private val config: LogicConfig) {
                         val parsed = body?.let { value -> runCatching { JSONObject(value) }.getOrNull() }
                         if (!it.isSuccessful) {
                             val message = ApiFailureMessage.forResponse(it.code, parsed?.optString("error_code"),
-                                request.url.encodedPath.contains("/app/health/"))
+                                request.url.encodedPath.contains("/app/health/"), isTaskPath(request.url.encodedPath))
                             if (continuation.isActive) continuation.resumeWithException(ApiException(message))
                             return
                         }

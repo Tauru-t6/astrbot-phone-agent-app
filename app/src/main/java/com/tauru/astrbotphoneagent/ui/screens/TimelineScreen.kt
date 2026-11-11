@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.data.AppState
 import com.tauru.astrbotphoneagent.data.TimelineItem
 import com.tauru.astrbotphoneagent.data.TimelineItemType
@@ -67,7 +68,8 @@ fun TimelineScreen(appState: AppState) {
     val companion by appState.companion.collectAsState(initial = null)
     val tasks by appState.tasks.collectAsState(initial = emptyList())
     var selectedType by rememberSaveable { mutableStateOf<TimelineItemType?>(null) }
-    val visibleItems = timeline.filter { selectedType == null || it.type == selectedType }
+    val visibleItems = timeline.filter { (selectedType == null || it.type == selectedType) &&
+        (!BuildConfig.IS_BOT_DEVICE || it.type == TimelineItemType.TASK_RESULT) }
     val colors = MaterialTheme.colorScheme
     // R06：任务详情/截图重开状态；任务已清理时提示。
     var detailTask by remember { mutableStateOf<com.tauru.astrbotphoneagent.data.AgentTask?>(null) }
@@ -79,9 +81,9 @@ fun TimelineScreen(appState: AppState) {
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
-            PageHeading("动态", "提醒、任务和日常，都在这里")
+            PageHeading(if (BuildConfig.IS_BOT_DEVICE) "执行记录" else "动态", if (BuildConfig.IS_BOT_DEVICE) "查看这台手机的操作与结果" else "提醒、任务和日常，都在这里")
             Spacer(Modifier.height(16.dp))
-            Row(
+            if (!BuildConfig.IS_BOT_DEVICE) Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
@@ -93,7 +95,7 @@ fun TimelineScreen(appState: AppState) {
             Spacer(Modifier.height(14.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (selectedType == null) "最近动态" else timelineTypeLabel(selectedType!!),
+                    if (BuildConfig.IS_BOT_DEVICE) "最近操作" else if (selectedType == null) "最近动态" else timelineTypeLabel(selectedType!!),
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleSmall,
                     color = colors.onSurfaceVariant,
@@ -337,7 +339,7 @@ private fun TimelineEmptyState(isTimelineEmpty: Boolean, selectedLabel: String?)
                 textAlign = TextAlign.Center,
             )
             Text(
-                if (isTimelineEmpty) "还没有动态。提醒、任务和伙伴的消息，会在这里相遇。" else "还没有${selectedLabel.orEmpty()}记录，稍后再来看看。",
+                if (BuildConfig.IS_BOT_DEVICE) "还没有操作记录。任务执行后可在这里查看结果。" else if (isTimelineEmpty) "还没有动态。提醒、任务和伙伴的消息，会在这里相遇。" else "还没有${selectedLabel.orEmpty()}记录，稍后再来看看。",
                 modifier = Modifier.padding(top = 10.dp),
                 style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 24.sp),
                 color = colors.onSurfaceVariant,

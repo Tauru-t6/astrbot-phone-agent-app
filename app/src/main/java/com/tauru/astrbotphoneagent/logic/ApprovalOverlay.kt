@@ -207,6 +207,8 @@ object ApprovalLabels {
         "lock_screen" -> "锁屏"
         "tap" -> "点击"
         "input_text" -> "输入文字"
+        "ui_snapshot" -> "观察任务页面"
+        "ui_action" -> "执行界面操作"
         else -> action
     }
 }

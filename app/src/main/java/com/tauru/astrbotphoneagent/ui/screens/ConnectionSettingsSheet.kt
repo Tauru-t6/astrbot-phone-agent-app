@@ -98,7 +98,7 @@ internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSet
                 Text("连接 AstrBot，再按需要设置手机控制与中继。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 FormSection("AstrBot 服务")
                 ConnectionAddressField("插件地址", pluginUrl, { pluginUrl = it; feedback = null }, pluginError, busy == null,
-                    "http://服务器:6185/api/plug/astrbot_plugin_phone_agent", "填入完整的 Phone Agent 插件地址。")
+                    "http://服务器:6185/api/plug/astrbot_plugin_phone_agent", "填入完整的 Phone Control 插件地址。")
                 SecretField("插件 Token", pluginToken, { pluginToken = it; feedback = null }, settings.pluginTokenConfigured, busy == null,
                     "使用面板登录后的 JWT；不要带 Bearer 前缀。", "已设置 · 留空保留")
                 FormSection("手机控制")

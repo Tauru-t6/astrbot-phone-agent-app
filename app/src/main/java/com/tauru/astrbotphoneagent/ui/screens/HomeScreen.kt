@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.data.*
 import com.tauru.astrbotphoneagent.logic.HealthSource
 import com.tauru.astrbotphoneagent.ui.components.*
@@ -46,20 +47,33 @@ fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
     val diagnostics by appState.diagnostics.collectAsState(initial = null)
     val settings by appState.connectionSettings.collectAsState(initial = null)
     val health by appState.healthConnect.collectAsState(initial = HealthConnectState())
+    val autonomy by appState.autonomyOverview.collectAsState(initial = AutonomyOverview())
     var panel by rememberSaveable { mutableStateOf<String?>(null) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        PageHeading("生活", SimpleDateFormat("M月d日 · EEEE", Locale.CHINA).format(Date())) {
+        PageHeading(if (BuildConfig.IS_BOT_DEVICE) "Phone Control Bot" else "Phone Control", SimpleDateFormat("M月d日 · EEEE", Locale.CHINA).format(Date())) {
             FilledTonalIconButton(onClick = { panel = "connection" }, enabled = settings != null, colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)) {
                 Icon(Icons.Outlined.Settings, contentDescription = "打开服务器连接")
             }
         }
         DeviceConnectionCard(status, diagnostics, settings) { panel = "connection" }
-        ScreenTimeCard(status, diagnostics) { panel = "permissions" }
-        if (health.enabled) {
+        GlassCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("让手机完成一件事", style = MaterialTheme.typography.titleLarge)
+                Text("给出目标，核对范围，再观察逐步操作与核验的结果。", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val pending = autonomy.taskApprovals.count { it.status == "pending" && it.expiresAt > System.currentTimeMillis() / 1000.0 }
+                val running = autonomy.taskRuns.count { it.status in setOf("pending", "running", "executing", "verifying") }
+                if (pending > 0 || running > 0) Text("$pending 项待确认 · $running 项进行中", style = MaterialTheme.typography.labelLarge)
+                Button(onClick = { panel = "ui-task" }, modifier = Modifier.fillMaxWidth()) { Text("发起手机任务") }
+                OutlinedButton(onClick = { panel = "autonomy" }, modifier = Modifier.fillMaxWidth()) { Text("审批与执行进度") }
+            }
+        }
+        if (!BuildConfig.IS_BOT_DEVICE) ScreenTimeCard(status, diagnostics) { panel = "permissions" }
+        if (!BuildConfig.IS_BOT_DEVICE && health.enabled) {
             GlassCard(Modifier.fillMaxWidth().clickable(role = Role.Button) { panel = "health" }) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("健康摘要", style = MaterialTheme.typography.titleMedium)
@@ -75,13 +89,16 @@ fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
             }
         }
         LifeActivityEntrances(tasks.size, reminders.size) { panel = it }
-        if (actions.isNotEmpty()) QuickActionsSection(actions, onQuickAction)
+        val visibleActions = if (BuildConfig.IS_BOT_DEVICE) actions.filter { it.id !in setOf("focus_mode", "night_mode", "release_apps") } else actions
+        if (visibleActions.isNotEmpty()) QuickActionsSection(visibleActions, onQuickAction)
         ForegroundRow(status)
     }
     when (panel) {
         "connection" -> settings?.let { ConnectionSettingsSheet(appState, it) { panel = null } }
         "permissions" -> PermissionSettingsSheet(appState) { panel = null }
-        "health" -> HealthConnectSheet(appState) { panel = null }
+        "health" -> if (!BuildConfig.IS_BOT_DEVICE) HealthConnectSheet(appState) { panel = null }
+        "ui-task" -> UiTaskSheet(appState, onShowApprovals = { panel = "autonomy" }) { panel = null }
+        "autonomy" -> AutonomySheet(appState) { panel = null }
         "tasks", "reminders" -> LifeActivitySheet(appState, panel!!) { panel = null }
     }
 }

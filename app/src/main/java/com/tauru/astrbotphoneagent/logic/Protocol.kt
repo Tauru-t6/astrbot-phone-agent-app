@@ -22,6 +22,7 @@ data class CommandEnvelope(
     val type: String = "command",
     @SerialName("schema_version") val schemaVersion: Int = COMMAND_SCHEMA_VERSION,
     @SerialName("command_id") val commandId: String,
+    @SerialName("target_device_id") val targetDeviceId: String? = null,
     val action: String,
     @Serializable(with = CommandArgsSerializer::class)
     val args: Map<String, String> = emptyMap(),
@@ -51,6 +52,7 @@ val COMMAND_ACTIONS: Set<String> = setOf(
     "location", "usage_stats", "send_notification", "ping",
     // UI automation, at parity with the OperitAI backend.
     "tap", "long_press", "swipe", "scroll", "input_text", "key_event",
+    "ui_snapshot", "ui_action",
 )
 
 // Largest coordinate the input actions accept, mirroring the plugin check.
@@ -70,6 +72,7 @@ val DANGEROUS_ACTIONS: Set<String> = setOf(
     "close_app", "suspend_app", "suspend_video_apps", "send_notification",
     "location", "screen_text", "screenshot",
     "tap", "long_press", "swipe", "scroll", "input_text", "key_event",
+    "ui_snapshot", "ui_action",
 )
 
 @Serializable

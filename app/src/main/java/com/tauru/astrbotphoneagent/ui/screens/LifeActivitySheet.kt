@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.data.*
 import com.tauru.astrbotphoneagent.ui.components.GlassCard
 import kotlinx.coroutines.CancellationException
@@ -35,7 +36,10 @@ import java.util.Locale
 
 @Composable
 internal fun LifeActivityEntrances(taskCount: Int, reminderCount: Int, onOpen: (String) -> Unit) {
-    val entries = listOf(Triple("tasks", "任务", "$taskCount 条记录"), Triple("reminders", "提醒", "$reminderCount 项待提醒"))
+    val entries = buildList {
+        add(Triple("tasks", "任务", "$taskCount 条记录"))
+        if (!BuildConfig.IS_BOT_DEVICE) add(Triple("reminders", "提醒", "$reminderCount 项待提醒"))
+    }
     val fontScale = LocalDensity.current.fontScale
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val columns = if (maxWidth < 300.dp || fontScale > 1.2f) 1 else 2
@@ -65,7 +69,7 @@ internal fun LifeActivitySheet(appState: AppState, panel: String, onDismiss: () 
     val reminders by appState.reminders.collectAsState(initial = emptyList())
     val tasks by appState.tasks.collectAsState(initial = emptyList())
     val diagnostics by appState.diagnostics.collectAsState(initial = AppDiagnostics())
-    var selected by rememberSaveable { mutableStateOf(panel) }
+    var selected by rememberSaveable { mutableStateOf(if (BuildConfig.IS_BOT_DEVICE) "tasks" else panel) }
     var text by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue()) }
     var minutes by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("30")) }
     var busy by remember { mutableStateOf(false) }
@@ -97,12 +101,12 @@ internal fun LifeActivitySheet(appState: AppState, panel: String, onDismiss: () 
             LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("生活备忘", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+                    Text(if (BuildConfig.IS_BOT_DEVICE) "手机任务" else "生活备忘", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
                     TextButton(onClick = { submit({ appState.refreshStatus(); ActionFeedback(true, "已请求刷新，最新状态会自动更新") }) }, enabled = !busy) { Text("刷新") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected == "tasks", { selected = "tasks"; feedback = null }, label = { Text("任务 · ${tasks.size}") }, enabled = !busy)
-                    FilterChip(selected == "reminders", { selected = "reminders"; feedback = null }, label = { Text("提醒 · ${reminders.size}") }, enabled = !busy)
+                    if (!BuildConfig.IS_BOT_DEVICE) FilterChip(selected == "reminders", { selected = "reminders"; feedback = null }, label = { Text("提醒 · ${reminders.size}") }, enabled = !busy)
                 }
             }
             if (!diagnostics.pluginConnected) item {

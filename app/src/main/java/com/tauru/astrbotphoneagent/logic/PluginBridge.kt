@@ -22,6 +22,7 @@ class PluginBridge(
     private val server = CommandServer(config, runner, scope)
     private val jobs = mutableListOf<Job>()
     private val syncMutex = Mutex()
+    @Volatile private var relayUpdateRequired = false
     private val _serverState = MutableStateFlow<JSONObject?>(null)
     val serverState: StateFlow<JSONObject?> = _serverState.asStateFlow()
     private val _lastStatus = MutableStateFlow<DeviceStatusSnapshot?>(null)
@@ -92,7 +93,8 @@ class PluginBridge(
             }
             val body = client.fetchAppState()
             _serverState.value = body
-            _bridgeState.update { it.copy(pluginConnected = true, lastSyncAtEpochMs = System.currentTimeMillis(), lastError = null) }
+            _bridgeState.update { it.copy(pluginConnected = true, lastSyncAtEpochMs = System.currentTimeMillis(),
+                lastError = if (relayUpdateRequired) RELAY_UPDATE_REQUIRED else null) }
             true
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
@@ -130,7 +132,9 @@ class PluginBridge(
             try {
                 if (config.relayUrl().isNotBlank() && config.relayTokenValue().isNotBlank()) {
                     val command = client.relayPoll(DeviceIdentity.deviceId(context))
-                    _bridgeState.update { it.copy(relayReachable = true) }
+                    relayUpdateRequired = false
+                    _bridgeState.update { it.copy(relayReachable = true,
+                        lastError = it.lastError.takeUnless { error -> error == RELAY_UPDATE_REQUIRED }) }
                     if (command != null) coroutineScope {
                         val renewal = launch {
                             while (currentCoroutineContext().isActive) {
@@ -146,8 +150,16 @@ class PluginBridge(
                             client.relayReportResult(result)
                         } finally { renewal.cancel() }
                     }
-                } else _bridgeState.update { it.copy(relayReachable = false) }
+                } else {
+                    relayUpdateRequired = false
+                    _bridgeState.update { it.copy(relayReachable = false,
+                        lastError = it.lastError.takeUnless { error -> error == RELAY_UPDATE_REQUIRED }) }
+                }
             } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: RelayUpdateRequiredException) {
+                relayUpdateRequired = true
+                _bridgeState.update { it.copy(relayReachable = false, lastError = RELAY_UPDATE_REQUIRED) }
+            }
             catch (_: Exception) { _bridgeState.update { it.copy(relayReachable = false) } }
             delay(5_000)
         }

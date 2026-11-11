@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <!-- Lint 31.13 reads this flavor overlay before manifest merging.
+             Keep the actual foreground-service contract explicit here too. -->
+        <service android:name="com.tauru.astrbotphoneagent.PhoneConnectionService"
+            android:exported="false" android:foregroundServiceType="connectedDevice" />
+        <service android:name="com.tauru.astrbotphoneagent.logic.NotificationRelayService"
+            tools:node="remove" />
+    </application>
+</manifest>

@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.data.ActionFeedback
 import com.tauru.astrbotphoneagent.data.AppState
 import com.tauru.astrbotphoneagent.data.AutomationSettings
@@ -35,6 +36,8 @@ import kotlinx.coroutines.launch
 // are forwarded. Every toggle here narrows or widens the on-device confirmation
 // gate, so the copy states the trade-off plainly.
 private val ACTION_LABELS = listOf(
+    Triple("ui_snapshot", "读取界面节点", "将目标 App 的界面内容发送给已连接服务器的任务模型。默认关闭免确认。"),
+    Triple("ui_action", "操作界面", "点击、输入、滚动或返回。默认关闭免确认；开启后信任该服务器发送的这一类命令。"),
     Triple("screenshot", "截图", "把手机屏幕画面发给你。默认允许。"),
     Triple("screen_text", "读取屏幕文字", "读取当前界面上的文字内容。"),
     Triple("tap", "点击屏幕", "在屏幕上按坐标点击。"),
@@ -109,6 +112,7 @@ internal fun AutomationSettingsSheet(appState: AppState, onDismiss: () -> Unit) 
                 )
             }
 
+            if (!BuildConfig.IS_BOT_DEVICE) {
             HorizontalDivider()
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -125,6 +129,7 @@ internal fun AutomationSettingsSheet(appState: AppState, onDismiss: () -> Unit) 
                     onCheckedChange = { persist(draft.copy(notificationForwarding = it)) },
                 )
             }
+            }
 
             HorizontalDivider()
             Text("免确认操作", style = MaterialTheme.typography.titleMedium)
@@ -133,6 +138,8 @@ internal fun AutomationSettingsSheet(appState: AppState, onDismiss: () -> Unit) 
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text("连续界面任务需要在执行设备上手动开启「读取界面节点」和「操作界面」。这些开关对已连接服务器的同类命令持续有效，可随时关闭；服务端每次任务仍需单独核对范围并批准。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             for ((key, label, detail) in ACTION_LABELS) {
                 if (key !in DANGEROUS_ACTIONS) continue
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

@@ -37,6 +37,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.data.AppState
 import com.tauru.astrbotphoneagent.data.TaskStatus
 import com.tauru.astrbotphoneagent.ui.components.BackdropMood
@@ -48,9 +49,9 @@ import kotlinx.coroutines.launch
 
 private data class Tab(val label: String, val icon: ImageVector)
 private val tabs = listOf(
-    Tab("动态", Icons.Filled.History),
-    Tab("生活", Icons.Filled.GridView),
-    Tab("我的", Icons.Outlined.PersonOutline),
+    Tab(if (BuildConfig.IS_BOT_DEVICE) "记录" else "动态", Icons.Filled.History),
+    Tab("控制", Icons.Filled.GridView),
+    Tab(if (BuildConfig.IS_BOT_DEVICE) "设置" else "我的", Icons.Outlined.PersonOutline),
 )
 
 @Composable

@@ -58,7 +58,7 @@ internal fun HealthConnectSheet(appState: AppState, onDismiss: () -> Unit) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Health Connect", style = MaterialTheme.typography.headlineSmall)
-            Text("选择一个写入 Health Connect 的健康 App。Phone Agent 只读取该来源最近 7 天的按日摘要。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("选择一个写入 Health Connect 的健康 App。Phone Control 只读取该来源最近 7 天的按日摘要。", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(if (state.available) "Health Connect 已就绪" else "Health Connect 不可用", style = MaterialTheme.typography.titleMedium)
             Text("当前来源：${HealthSource.label(state.originPackage)}", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(

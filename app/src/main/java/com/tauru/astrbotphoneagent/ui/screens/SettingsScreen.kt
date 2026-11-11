@@ -42,8 +42,8 @@ fun SettingsScreen(appState: AppState) {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        PageHeading("我的", "连接、权限，以及你的偏好")
-        Surface(shape = RoundedCornerShape(24.dp), color = paper, contentColor = colors.onSurface, modifier = Modifier.fillMaxWidth()) {
+        PageHeading(if (BuildConfig.IS_BOT_DEVICE) "设置" else "我的", "连接、权限，以及你的偏好")
+        if (!BuildConfig.IS_BOT_DEVICE) Surface(shape = RoundedCornerShape(24.dp), color = paper, contentColor = colors.onSurface, modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.clip(RoundedCornerShape(24.dp)).clickable(enabled = companion != null, role = Role.Button) { panel = "profile" }.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     ProfileAvatar(companion?.name.orEmpty(), companion?.avatarUri, Modifier.size(52.dp))
@@ -69,24 +69,26 @@ fun SettingsScreen(appState: AppState) {
                 diagnostics?.usageAccess != true -> "使用情况访问待开启"
                 else -> "手机控制与使用统计已就绪"
             }, onClick = { panel = "permissions" })
-            HorizontalDivider(Modifier.padding(start = 58.dp), color = colors.outlineVariant.copy(alpha = .5f))
-            SettingsRow(Icons.Outlined.FavoriteBorder, "Health Connect", "健康读取、服务器同步与数据来源", onClick = { panel = "health" })
+            if (!BuildConfig.IS_BOT_DEVICE) {
+                HorizontalDivider(Modifier.padding(start = 58.dp), color = colors.outlineVariant.copy(alpha = .5f))
+                SettingsRow(Icons.Outlined.FavoriteBorder, "Health Connect", "健康读取、服务器同步与数据来源", onClick = { panel = "health" })
+            }
         }
-        SettingsGroup("日常与偏好") {
+        SettingsGroup(if (BuildConfig.IS_BOT_DEVICE) "任务与权限" else "日常与偏好") {
             SettingsRow(Icons.Outlined.TaskAlt, "手机任务记录", "${tasks.size} 条记录 · 查看进度与结果", onClick = { panel = "tasks" })
             HorizontalDivider(Modifier.padding(start = 58.dp), color = colors.outlineVariant.copy(alpha = .5f))
-            SettingsRow(Icons.Outlined.PrivacyTip, "隐私与自动化", "通知转发、操作确认与授权", onClick = { panel = "automation" })
+            SettingsRow(Icons.Outlined.PrivacyTip, "隐私与自动化", if (BuildConfig.IS_BOT_DEVICE) "操作确认与授权" else "通知转发、操作确认与授权", onClick = { panel = "automation" })
             HorizontalDivider(Modifier.padding(start = 58.dp), color = colors.outlineVariant.copy(alpha = .5f))
-            SettingsRow(Icons.Outlined.AutoAwesome, "自主功能", "夜间守护与主动关怀", onClick = { panel = "autonomy" })
+            SettingsRow(Icons.Outlined.AutoAwesome, "自主功能", if (BuildConfig.IS_BOT_DEVICE) "界面任务与执行审批" else "界面任务、执行审批与日常守护", onClick = { panel = "autonomy" })
         }
-        Text("Phone Agent  ·  ${BuildConfig.VERSION_NAME}", Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+        Text("Phone Control${if (BuildConfig.IS_BOT_DEVICE) " Bot" else ""}  ·  ${BuildConfig.VERSION_NAME}", Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
     }
     when (panel) {
         "connection" -> settings?.let { ConnectionSettingsSheet(appState, it) { panel = null } }
         "permissions" -> PermissionSettingsSheet(appState) { panel = null }
-        "health" -> HealthConnectSheet(appState) { panel = null }
+        "health" -> if (!BuildConfig.IS_BOT_DEVICE) HealthConnectSheet(appState) { panel = null }
         "tasks" -> LifeActivitySheet(appState, "tasks") { panel = null }
-        "profile" -> companion?.let { ProfileSettingsSheet(appState, it) { panel = null } }
+        "profile" -> if (!BuildConfig.IS_BOT_DEVICE) companion?.let { ProfileSettingsSheet(appState, it) { panel = null } }
         "automation" -> AutomationSettingsSheet(appState) { panel = null }
         "autonomy" -> AutonomySheet(appState) { panel = null }
     }

@@ -2,6 +2,7 @@ package com.tauru.astrbotphoneagent.data
 
 import android.content.Context
 import android.util.AtomicFile
+import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.logic.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -66,6 +67,8 @@ class RealAppState(context: Context) : AppState {
     @Volatile private var autoApprove: Set<String> = emptySet()
 
     init {
+        // Bot builds do not initialize Health Connect, so initialize identity here.
+        DeviceIdentity.deviceId(appContext)
         runner.onCommandStarted = { command ->
             upsertTask(AgentTask(command.commandId, commandTitle(command.action), TaskStatus.RUNNING,
                 (command.createdAtEpochSec * 1000).toLong(), null, null, null,
@@ -78,7 +81,7 @@ class RealAppState(context: Context) : AppState {
             autoApprove = runCatching { config.autoApproveActions() }.getOrDefault(emptySet())
             _automation.value = AutomationSettings(
                 autoApproveActions = autoApprove,
-                notificationForwarding = runCatching { config.notificationForwarding() }.getOrDefault(false),
+                notificationForwarding = !BuildConfig.IS_BOT_DEVICE && runCatching { config.notificationForwarding() }.getOrDefault(false),
             )
             loadHistory()
             ready.complete(Unit)
@@ -86,7 +89,7 @@ class RealAppState(context: Context) : AppState {
             launch { collectRemoteState() }
             launch { collectDeviceStatus() }
             bridge.start()
-            launch {
+            if (!BuildConfig.IS_BOT_DEVICE) launch {
                 healthSync.refresh()
                 delay(20_000)
                 while (isActive) {
@@ -106,6 +109,7 @@ class RealAppState(context: Context) : AppState {
     override suspend fun syncHealthConnect(): ActionFeedback = healthSync.sync()
 
     fun onForeground() {
+        if (BuildConfig.IS_BOT_DEVICE) return
         scope.launch {
             healthSync.refresh()
             healthSync.sync(force = false)
@@ -114,13 +118,14 @@ class RealAppState(context: Context) : AppState {
 
     override suspend fun saveAutomationSettings(update: AutomationSettings): ActionFeedback {
         val allowed = update.autoApproveActions.intersect(DANGEROUS_ACTIONS)
+        val forwarding = !BuildConfig.IS_BOT_DEVICE && update.notificationForwarding
         return try {
             config.update(mapOf(
                 "auto_approve_actions" to allowed.joinToString(","),
-                "notification_forwarding" to if (update.notificationForwarding) "true" else "false",
+                "notification_forwarding" to if (forwarding) "true" else "false",
             ))
             autoApprove = allowed
-            _automation.value = AutomationSettings(allowed, update.notificationForwarding)
+            _automation.value = AutomationSettings(allowed, forwarding)
             ActionFeedback(true, "已保存")
         } catch (_: Exception) {
             ActionFeedback(false, "保存失败，请重试")
@@ -169,8 +174,10 @@ class RealAppState(context: Context) : AppState {
 
     private suspend fun collectRemoteState() {
         bridge.serverState.filterNotNull().collect { state ->
-            _reminders.value = state.optJSONArray("reminders").objects().mapNotNull { it.toReminder() }.sortedBy { it.dueAtEpochMs }
-            val remote = state.optJSONArray("timeline").objects()
+            _reminders.value = if (BuildConfig.IS_BOT_DEVICE) emptyList() else state.optJSONArray("reminders").objects().mapNotNull { it.toReminder() }.sortedBy { it.dueAtEpochMs }
+            val remote = state.optJSONArray("timeline").objects().filter {
+                !BuildConfig.IS_BOT_DEVICE || it.optString("type") == "task_result"
+            }
             val incoming = remote.filter { it.optString("id").isNotBlank() }.map { it.toTimelineItem() }
             _timeline.update { existing -> (incoming + existing).distinctBy { it.id }.sortedByDescending { it.timestampEpochMs }.take(200) }
             state.optJSONArray("recent_commands").objects().forEach { item ->
@@ -190,7 +197,7 @@ class RealAppState(context: Context) : AppState {
                 users.keys().asSequence().mapNotNull { uid -> users.optJSONObject(uid) }.firstOrNull()
             }
             // P1-D: read-only care snapshot from the companion bridge.
-            val careJson = state.optJSONObject("care")?.takeIf { it.length() > 0 }
+            val careJson = state.optJSONObject("care")?.takeIf { !BuildConfig.IS_BOT_DEVICE && it.length() > 0 }
             val careUser = careJson?.optJSONObject("users")?.let { users ->
                 users.keys().asSequence().firstOrNull()?.let { users.optJSONObject(it) }
             }
@@ -221,8 +228,18 @@ class RealAppState(context: Context) : AppState {
             }
             // P1-E: executed task runs (dry-run or real), newest first.
             // Stage 4: proposals waiting for a human decision.
+            val localDeviceId = DeviceIdentity.deviceId(appContext)
+            val uiTask = state.optJSONObject("ui_task")
+            val devices = state.optJSONArray("devices")?.let { list ->
+                (0 until list.length()).mapNotNull { list.optJSONObject(it) }.mapNotNull { item ->
+                    val id = item.textOrNull("device_id") ?: return@mapNotNull null
+                    RegisteredPhone(id, item.textOrNull("label") ?: id, item.textOrNull("role") ?: "unassigned",
+                        item.optBoolean("online", false), item.textOrNull("app_version").orEmpty(), item.textOrNull("device_kind").orEmpty())
+                }
+            } ?: emptyList()
             val taskApprovals = state.optJSONArray("task_approvals")?.let { arr ->
                 (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map { item ->
+                    val taskScope = item.optJSONObject("scope")
                     TaskApproval(
                         approvalId = item.optString("approval_id", ""),
                         runId = item.optString("run_id", ""),
@@ -232,8 +249,19 @@ class RealAppState(context: Context) : AppState {
                         status = item.optString("status", ""),
                         expiresAt = item.optDouble("expires_at", 0.0),
                         reason = item.optString("reason", ""),
+                        goal = item.optString("goal", ""),
+                        mode = item.optString("mode", ""),
+                        packageName = taskScope?.optString("package", "").orEmpty(),
+                        allowedTexts = taskScope?.stringList("allowed_texts").orEmpty(),
+                        successTexts = taskScope?.stringList("success_texts").orEmpty(),
+                        maxSteps = taskScope?.optInt("max_steps", 0) ?: 0,
+                        deviceId = taskScope?.textOrNull("device_id") ?: item.textOrNull("device_id").orEmpty(),
+                        deviceRole = taskScope?.optString("device_role", "").orEmpty(),
+                        requesterDeviceId = item.textOrNull("requester_device_id") ?: taskScope?.textOrNull("requester_device_id").orEmpty(),
+                        completionMode = taskScope?.textOrNull("completion_mode").orEmpty(),
                     )
-                }
+                }.filter { approval -> approval.deviceId == localDeviceId || approval.requesterDeviceId == localDeviceId ||
+                    (devices.size <= 1 && approval.deviceId.isBlank() && approval.mode != "ui") }
             } ?: emptyList()
             // Stage 4: surface a pending approval over the current screen when
             // the overlay permission is granted; otherwise it stays in the sheet.
@@ -241,7 +269,12 @@ class RealAppState(context: Context) : AppState {
                 it.status == "pending" && it.expiresAt > System.currentTimeMillis() / 1000.0
             }
             if (pendingApproval != null) {
-                val shown = withContext(Dispatchers.Main.immediate) { ApprovalOverlay.show(
+                // UI-task scope includes target device, app and input strings.
+                // It must be reviewed in the full sheet before approval.
+                val shown = if (pendingApproval.mode == "ui") {
+                    withContext(Dispatchers.Main.immediate) { ApprovalOverlay.dismiss() }
+                    false
+                } else withContext(Dispatchers.Main.immediate) { ApprovalOverlay.show(
                     appContext, pendingApproval,
                     secondsLeft = (pendingApproval.expiresAt - System.currentTimeMillis() / 1000.0)
                         .toInt().coerceAtLeast(0),
@@ -254,7 +287,8 @@ class RealAppState(context: Context) : AppState {
                     Notifier.post(
                         appContext,
                         "有一件事要你点头",
-                        "$actions · 打开 App 后可在自主功能里允许或拒绝",
+                        if (pendingApproval.mode == "ui") "界面任务待确认 · 打开 Phone Control 查看目标、输入内容和步骤上限"
+                        else "$actions · 打开 App 后可在自主功能里允许或拒绝",
                         "approval-${pendingApproval.approvalId}",
                     )
                 }
@@ -264,6 +298,7 @@ class RealAppState(context: Context) : AppState {
             val taskRuns = state.optJSONArray("task_runs")?.let { arr ->
                 (0 until arr.length()).mapNotNull { index -> arr.optJSONObject(index) }.map { item ->
                     val summary = item.optJSONObject("summary")
+                    val taskScope = summary?.optJSONObject("ui_scope")
                     TaskRunSummary(
                         runId = item.optString("run_id", ""),
                         goal = item.optString("goal", ""),
@@ -275,6 +310,13 @@ class RealAppState(context: Context) : AppState {
                         blocked = summary?.optInt("blocked", 0) ?: 0,
                         refused = summary?.optString("refused", "").orEmpty(),
                         lastError = item.optString("last_error", ""),
+                        mode = summary?.optString("mode", "").orEmpty(),
+                        packageName = taskScope?.optString("package", "").orEmpty(),
+                        maxSteps = taskScope?.optInt("max_steps", 0) ?: 0,
+                        modelCalls = summary?.optInt("model_calls", 0) ?: 0,
+                        deviceId = item.textOrNull("device_id") ?: taskScope?.textOrNull("device_id").orEmpty(),
+                        deviceRole = taskScope?.optString("device_role", "").orEmpty(),
+                        requesterDeviceId = summary?.textOrNull("requester_device_id") ?: taskScope?.textOrNull("requester_device_id").orEmpty(),
                         steps = item.optJSONArray("steps")?.let { steps ->
                             (0 until steps.length()).mapNotNull { steps.optJSONObject(it) }.map { step ->
                                 TaskRunStep(
@@ -288,7 +330,8 @@ class RealAppState(context: Context) : AppState {
                             }
                         } ?: emptyList(),
                     )
-                }
+                }.filter { run -> run.deviceId == localDeviceId || run.requesterDeviceId == localDeviceId ||
+                    (devices.size <= 1 && run.deviceId.isBlank() && run.mode != "ui") }
             } ?: emptyList()
             _autonomyOverview.value = AutonomyOverview(
                 nightGuard = NightGuardState(
@@ -320,6 +363,22 @@ class RealAppState(context: Context) : AppState {
                 taskRuns = taskRuns,
                 taskApprovals = taskApprovals,
                 taskExecuteEnabled = state.optBoolean("task_execute_enabled", false),
+                uiTask = UiTaskCapability(
+                    supported = uiTask?.optBoolean("supported", false) ?: false,
+                    enabled = uiTask?.optBoolean("enabled", false) ?: false,
+                    reason = uiTask?.optString("reason", "").orEmpty(),
+                    maxSteps = (uiTask?.optInt("max_steps", 8) ?: 8).coerceIn(1, 12),
+                    packages = uiTask?.optJSONArray("packages")?.let { list ->
+                        (0 until list.length()).mapNotNull { list.optJSONObject(it) }.mapNotNull { item ->
+                            item.optString("package").takeIf { it.isNotBlank() }?.let { packageName ->
+                                UiTaskApp(item.optString("name", packageName), packageName)
+                            }
+                        }
+                    } ?: emptyList(),
+                ),
+                devices = devices,
+                defaultDeviceId = state.optString("default_device_id", ""),
+                currentDeviceId = localDeviceId,
             )
             // Both a due event and an explicit notify bit are required. Old history never alerts.
             val serverNow = state.optDouble("server_time", System.currentTimeMillis() / 1000.0)
@@ -476,6 +535,8 @@ class RealAppState(context: Context) : AppState {
                     "close_app", "suspend_app", "suspend_video_apps" ->
                         "目标应用：${command.args["package"] ?: command.args["packages"] ?: "未指定"}"
                     "send_notification" -> "${command.args["title"].orEmpty()}\n${command.args["text"].orEmpty()}".take(400)
+                    "ui_snapshot" -> "读取 ${command.args["expected_package"].orEmpty().take(255)} 的当前界面，供本次任务规划下一步。"
+                    "ui_action" -> "在 ${command.args["expected_package"].orEmpty().take(255)} 中${uiActionLabel(command.args["kind"].orEmpty())}。本次任务只能输入已批准范围内的文字。"
                     else -> command.action
                 })
         upsertTask(task)
@@ -514,16 +575,17 @@ class RealAppState(context: Context) : AppState {
             result.errorCode in setOf("cancelled", "denied") -> TaskStatus.CANCELLED
             else -> TaskStatus.FAILED
         }
-        // G3: parse screenshot output as a typed ScreenshotResult instead of
-        // truncating base64 data to 500 chars. For non-screenshot actions,
-        // keep the short summary but use a larger limit to avoid losing
-        // screen_text / usage_stats output.
+        // Screen snapshots are transient model input, never timeline/history content.
         val screenshot = if (result.success && command.action == "screenshot") {
             parseScreenshotResult(result.output)
         } else null
         val summary = if (result.success) {
-            if (screenshot != null) "截图 ${screenshot.width}×${screenshot.height}"
-            else result.output?.take(2000) ?: "已完成"
+            when {
+                command.action == "ui_snapshot" -> "已读取结构化界面"
+                command.action == "ui_action" -> "已执行${uiActionLabel(command.args["kind"].orEmpty())}，等待任务核验"
+                screenshot != null -> "截图 ${screenshot.width}×${screenshot.height}"
+                else -> result.output?.take(2000) ?: "已完成"
+            }
         } else null
         val task = (existing ?: AgentTask(command.commandId, commandTitle(command.action), TaskStatus.RUNNING,
             (command.createdAtEpochSec * 1000).toLong(), null, null, null)).copy(status = status,
@@ -590,6 +652,57 @@ class RealAppState(context: Context) : AppState {
 
     override suspend fun approveTask(approvalId: String): ActionFeedback = decideTask(approvalId, true)
 
+    override suspend fun proposeUiTask(request: UiTaskRequest): ActionFeedback {
+        ready.await()
+        val current = _autonomyOverview.value
+        if (!current.uiTask.supported) return ActionFeedback(false, "请先升级服务器插件以启用界面任务")
+        if (!current.uiTask.enabled || !current.taskExecuteEnabled) return ActionFeedback(false, "服务器尚未开启界面任务执行")
+        if (request.goal.isBlank() || request.goal.length > 500) return ActionFeedback(false, "请填写 1–500 字的任务目标")
+        if (!Regex("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+").matches(request.packageName))
+            return ActionFeedback(false, "请填写有效的目标 App 包名")
+        if (request.allowedTexts.size > 5 || request.successTexts.isEmpty() || request.successTexts.size > 5 ||
+            (request.allowedTexts + request.successTexts).any { it.isBlank() || it.length > 200 || it.any(Char::isISOControl) })
+            return ActionFeedback(false, "每项文字须为 1–200 字，最多各 5 项；请至少填写一项完成页面文字")
+        if (request.maxSteps !in 1..current.uiTask.maxSteps) return ActionFeedback(false, "步骤上限超出服务器允许范围")
+        if (request.deviceId.isBlank()) return ActionFeedback(false, "请选择执行设备")
+        val selected = current.devices.firstOrNull { it.deviceId == request.deviceId }
+            ?: return ActionFeedback(false, "该设备已不在注册列表，请刷新")
+        if (selected.role !in setOf("personal", "bot")) return ActionFeedback(false, "请先为这台设备明确分配用途")
+        return try {
+            client.proposeUiTask(request)
+            bridge.refreshServerState()
+            ActionFeedback(true, "任务已提交，请在待你决定中核对执行设备、任务范围并允许这一次")
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { ActionFeedback(false, safeError(error)) }
+    }
+
+    override suspend fun cancelServerTask(runId: String): ActionFeedback {
+        ready.await()
+        if (runId.isBlank() || _autonomyOverview.value.taskRuns.none { it.runId == runId })
+            return ActionFeedback(false, "找不到本机对应的任务")
+        return try {
+            client.cancelServerTask(runId)
+            bridge.refreshServerState()
+            ActionFeedback(true, "已请求停止，请查看最新任务状态；已完成的操作不会自动撤销")
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { ActionFeedback(false, safeError(error)) }
+    }
+
+    override suspend fun setDeviceRole(deviceId: String, role: String, label: String): ActionFeedback {
+        ready.await()
+        val device = _autonomyOverview.value.devices.firstOrNull { it.deviceId == deviceId }
+            ?: return ActionFeedback(false, "找不到这台注册设备")
+        if (role !in setOf("personal", "bot", "unassigned")) return ActionFeedback(false, "设备用途不受支持")
+        if ((device.role == "personal") != (role == "personal")) return ActionFeedback(false, "已有个人手机用途固定，不能在这里替换")
+        if (label.length > 60 || label.any(Char::isISOControl)) return ActionFeedback(false, "设备名称最多 60 字且不能换行")
+        return try {
+            client.setDeviceRole(deviceId, role, label.trim())
+            bridge.refreshServerState()
+            ActionFeedback(true, "设备用途已保存")
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { ActionFeedback(false, safeError(error)) }
+    }
+
     override suspend fun rejectTask(approvalId: String, reason: String): ActionFeedback {
         ready.await()
         if (approvalId.isBlank()) return ActionFeedback(false, "找不到这条待批任务")
@@ -613,10 +726,13 @@ class RealAppState(context: Context) : AppState {
                 val run = result.optJSONObject("run")
                 val verified = run?.optJSONObject("summary")?.optInt("verified", 0) ?: 0
                 val refused = run?.optJSONObject("summary")?.optString("refused", "").orEmpty()
+                val status = run?.optString("status", "").orEmpty().ifBlank { result.optString("status", "") }
                 when {
                     refused.isNotBlank() -> ActionFeedback(false, "已批准，但执行被拒绝：$refused")
-                    verified > 0 -> ActionFeedback(true, "已批准并执行，核验通过 $verified 步")
-                    else -> ActionFeedback(true, "已批准，任务已执行")
+                    status in setOf("failed", "cancelled") -> ActionFeedback(false, "任务${if (status == "failed") "失败" else "已取消"}，请查看执行记录")
+                    status == "waiting_approval" || status == "needs_user" -> ActionFeedback(false, "任务需要你处理，请查看暂停原因")
+                    status == "done" -> ActionFeedback(true, "任务完成，核验通过 $verified 步")
+                    else -> ActionFeedback(true, "已批准，任务已启动；执行结果会在任务记录中更新")
                 }
             } else {
                 ActionFeedback(false, result.optString("error").ifBlank { "服务器拒绝了请求" })
@@ -749,6 +865,9 @@ class RealAppState(context: Context) : AppState {
 
     private fun JSONObject.secondsAsMs(key: String): Long = optDouble(key, 0.0).takeIf { it.isFinite() && it > 0 }?.let { (it * 1000).toLong() } ?: 0L
     private fun JSONObject.textOrNull(key: String) = if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() }
+    private fun JSONObject.stringList(key: String): List<String> = optJSONArray(key)?.let { list ->
+        (0 until list.length()).mapNotNull { index -> (list.opt(index) as? String)?.takeIf { it.isNotBlank() } }
+    }.orEmpty()
     private fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
     private fun safeError(error: Exception): String = if (error is AstrBotClient.ApiException) error.message ?: "请求失败" else "请求失败，请检查设置和网络"
     private fun now() = System.currentTimeMillis()
@@ -766,8 +885,18 @@ class RealAppState(context: Context) : AppState {
         "home" -> "返回桌面"
         "back" -> "返回上一步"
         "screen_text" -> "读取屏幕"
+        "ui_snapshot" -> "观察任务页面"
+        "ui_action" -> "执行界面操作"
         "usage_stats" -> "查看使用统计"
         else -> "手机操作"
+    }
+    private fun uiActionLabel(kind: String): String = when (kind) {
+        "tap" -> "点击已定位控件"
+        "input_text", "type" -> "输入批准文字"
+        "scroll" -> "滚动页面"
+        "back" -> "返回上一步"
+        "wait" -> "等待页面更新"
+        else -> "批准的界面操作"
     }
     private fun defaultQuickActions() = listOf(
         QuickAction("focus_mode", "专注", "30 分钟不看视频", "self_improvement", false, false),

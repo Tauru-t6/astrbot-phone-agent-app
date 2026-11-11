@@ -189,6 +189,13 @@ data class TaskRunSummary(
     val refused: String = "",
     val lastError: String = "",
     val steps: List<TaskRunStep> = emptyList(),
+    val mode: String = "",
+    val packageName: String = "",
+    val maxSteps: Int = 0,
+    val modelCalls: Int = 0,
+    val deviceId: String = "",
+    val deviceRole: String = "",
+    val requesterDeviceId: String = "",
 )
 
 data class TaskRunStep(
@@ -206,6 +213,45 @@ data class TaskApproval(
     val status: String = "",
     val expiresAt: Double = 0.0,
     val reason: String = "",
+    val goal: String = "",
+    val mode: String = "",
+    val packageName: String = "",
+    val allowedTexts: List<String> = emptyList(),
+    val successTexts: List<String> = emptyList(),
+    val maxSteps: Int = 0,
+    val deviceId: String = "",
+    val deviceRole: String = "",
+    val requesterDeviceId: String = "",
+    val completionMode: String = "",
+)
+
+data class UiTaskApp(val name: String, val packageName: String)
+
+data class UiTaskCapability(
+    val supported: Boolean = false,
+    val enabled: Boolean = false,
+    val reason: String = "",
+    val maxSteps: Int = 8,
+    val packages: List<UiTaskApp> = emptyList(),
+)
+
+data class UiTaskRequest(
+    val goal: String,
+    val packageName: String,
+    val allowedTexts: List<String>,
+    val successTexts: List<String>,
+    val maxSteps: Int,
+    val deviceId: String = "",
+    val completionMode: String = "visible_text",
+)
+
+data class RegisteredPhone(
+    val deviceId: String,
+    val label: String,
+    val role: String,
+    val online: Boolean,
+    val appVersion: String,
+    val deviceKind: String = "",
 )
 
 data class AutonomyOverview(
@@ -219,6 +265,10 @@ data class AutonomyOverview(
     val taskRuns: List<TaskRunSummary> = emptyList(),
     val taskApprovals: List<TaskApproval> = emptyList(),
     val taskExecuteEnabled: Boolean = false,
+    val uiTask: UiTaskCapability = UiTaskCapability(),
+    val devices: List<RegisteredPhone> = emptyList(),
+    val defaultDeviceId: String = "",
+    val currentDeviceId: String = "",
 )
 
 // P1-D: read-only care snapshot written by the companion bridge. The app never
@@ -275,6 +325,9 @@ interface AppState {
     suspend fun refreshStatus()                               // pull-to-refresh hook
     suspend fun createReminder(text: String, minutes: Int): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun approveTask(approvalId: String): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun proposeUiTask(request: UiTaskRequest): ActionFeedback = ActionFeedback(false, "服务器尚未支持界面任务")
+    suspend fun cancelServerTask(runId: String): ActionFeedback = ActionFeedback(false, "服务器暂不支持取消此任务")
+    suspend fun setDeviceRole(deviceId: String, role: String, label: String): ActionFeedback = ActionFeedback(false, "服务器尚未支持设备分工")
     suspend fun rejectTask(approvalId: String, reason: String = ""): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun cancelReminder(reminderId: String): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun saveConnectionSettings(update: ConnectionUpdate): ActionFeedback = ActionFeedback(false, "暂不可用")
