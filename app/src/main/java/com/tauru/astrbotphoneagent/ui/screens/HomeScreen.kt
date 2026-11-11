@@ -60,16 +60,18 @@ fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
             }
         }
         DeviceConnectionCard(status, diagnostics, settings) { panel = "connection" }
-        GlassCard(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("让手机完成一件事", style = MaterialTheme.typography.titleLarge)
-                Text("给出目标，核对范围，再观察逐步操作与核验的结果。", style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                val pending = autonomy.taskApprovals.count { it.status == "pending" && it.expiresAt > System.currentTimeMillis() / 1000.0 }
-                val running = autonomy.taskRuns.count { it.status in setOf("pending", "running", "executing", "verifying") }
-                if (pending > 0 || running > 0) Text("$pending 项待确认 · $running 项进行中", style = MaterialTheme.typography.labelLarge)
-                Button(onClick = { panel = "ui-task" }, modifier = Modifier.fillMaxWidth()) { Text("发起手机任务") }
-                OutlinedButton(onClick = { panel = "autonomy" }, modifier = Modifier.fillMaxWidth()) { Text("审批与执行进度") }
+        if (BuildConfig.IS_BOT_DEVICE) {
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("让手机完成一件事", style = MaterialTheme.typography.titleLarge)
+                    Text("给出目标，核对范围，再观察逐步操作与核验的结果。", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val pending = autonomy.taskApprovals.count { it.status == "pending" && it.expiresAt > System.currentTimeMillis() / 1000.0 }
+                    val running = autonomy.taskRuns.count { it.status in setOf("pending", "running", "executing", "verifying") }
+                    if (pending > 0 || running > 0) Text("$pending 项待确认 · $running 项进行中", style = MaterialTheme.typography.labelLarge)
+                    Button(onClick = { panel = "ui-task" }, modifier = Modifier.fillMaxWidth()) { Text("发起手机任务") }
+                    OutlinedButton(onClick = { panel = "autonomy" }, modifier = Modifier.fillMaxWidth()) { Text("审批与执行进度") }
+                }
             }
         }
         if (!BuildConfig.IS_BOT_DEVICE) ScreenTimeCard(status, diagnostics) { panel = "permissions" }

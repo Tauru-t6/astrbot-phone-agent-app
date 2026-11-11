@@ -13,6 +13,14 @@ class UiSnapshotTest {
     private fun args(snapshot: UiSnapshot, kind: String = "tap", vararg extras: Pair<String, String>) =
         mapOf("expected_package" to pkg, "snapshot_id" to snapshot.id, "kind" to kind, "node_id" to "n0") + extras
 
+    @Test fun emptyEditorHintIsAcceptedWithoutAcceptingChangedInputContent() {
+        assertTrue(editorTextMatches("", "搜索", "搜索"))
+        assertTrue(editorTextMatches("Android", "Android", "搜索"))
+        assertFalse(editorTextMatches("unexpected", "搜索", "搜索"))
+        assertFalse(editorTextMatches("", "搜索", "另一个输入框"))
+        assertFalse(editorTextMatches("Android", "搜索", "搜索"))
+    }
+
     @Test fun parsesXmlEntitiesChineseAndBoundedActionableNodeFields() {
         val snapshot = parse(xml(node(text = "动画 &amp; 科技", extra = "focusable=\"true\"")))
         val n = snapshot.nodes.single()
@@ -101,6 +109,35 @@ class UiSnapshotTest {
         val after = parse(page("立即付款"))
         assertEquals("ui_snapshot_changed", assertThrows(UiFailure::class.java) {
             UiActionPolicy.target(before, after, args(before))
+        }.code)
+    }
+
+    @Test fun unrelatedFeedInsertionCanRenumberAnUnchangedLabelledTarget() {
+        val before = parse(xml(node()))
+        val fresh = parse(xml(node(text="推荐视频", id="com.example.video:id/card", bounds="[0,300][800,800]"), node()))
+        val target = UiActionPolicy.target(before, fresh, args(before))!!
+        assertEquals("n1", target.id)
+        assertEquals("搜索", target.text)
+        assertEquals(before.nodes.single().bounds, target.bounds)
+    }
+
+    @Test fun labelledSearchContainerMayChangeSuggestionWithoutChangingItsAction() {
+        fun page(suggestion: String) = xml("""<node text="" resource-id="$pkg:id/expand_search" content-desc="搜索栏，按钮" class="android.widget.FrameLayout" package="$pkg" bounds="[20,40][400,100]" clickable="true" enabled="true">
+            <node text="$suggestion" class="android.widget.TextView" package="$pkg" bounds="[30,50][300,90]" enabled="true" />
+        </node>""")
+        val before=parse(page("推荐词一"))
+        assertNotNull(UiActionPolicy.target(before, parse(page("推荐词二")), args(before)))
+        val relabelled=parse(page("付款").replace("搜索栏，按钮", "付款按钮"))
+        assertEquals("ui_snapshot_changed", assertThrows(UiFailure::class.java) {
+            UiActionPolicy.target(before, relabelled, args(before))
+        }.code)
+    }
+
+    @Test fun backStillRequiresTheSamePageStructure() {
+        val before=parse(xml(node()))
+        val fresh=parse(xml(node(),node(text="另一页",id="com.example.video:id/other",bounds="[0,300][800,800]")))
+        assertEquals("ui_snapshot_changed",assertThrows(UiFailure::class.java) {
+            UiActionPolicy.target(before,fresh,args(before,"back")-"node_id")
         }.code)
     }
 

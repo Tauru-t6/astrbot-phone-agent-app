@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
 class UiInputMethodService : InputMethodService() {
     @Volatile private var editorPackage = ""
     @Volatile private var passwordEditor = true
+    @Volatile private var editorHint = ""
     @Volatile private var editorSession = 0L
 
     override fun onCreate() { super.onCreate(); active = this }
@@ -24,11 +25,12 @@ class UiInputMethodService : InputMethodService() {
         super.onStartInput(attribute, restarting)
         editorSession = nextSession.incrementAndGet()
         editorPackage = attribute?.packageName.orEmpty()
+        editorHint = attribute?.hintText?.toString().orEmpty()
         passwordEditor = attribute == null || isPasswordType(attribute.inputType)
     }
     override fun onFinishInput() {
         editorSession = nextSession.incrementAndGet()
-        editorPackage = ""; passwordEditor = true
+        editorPackage = ""; editorHint = ""; passwordEditor = true
         super.onFinishInput()
     }
     override fun onCreateInputView(): View = TextView(this).apply {
@@ -72,7 +74,10 @@ class UiInputMethodService : InputMethodService() {
                     val selected = connection.getSelectedText(0)?.toString().orEmpty()
                     val after = connection.getTextAfterCursor(1000, 0) ?: return@runCatching false
                     val existing = before.toString() + selected + after
-                    if (existing != expectedText) return@runCatching false
+                    // Accessibility may expose an empty editor's search hint
+                    // as text. Accept it only when this same editor explicitly
+                    // supplied that hint and the live input connection is empty.
+                    if (!editorTextMatches(existing, expectedText, ime.editorHint)) return@runCatching false
                     if (!allowed.get() || ime.editorSession != expectedSession || ime.currentInputConnection !== connection) return@runCatching false
                     if (existing.isNotEmpty() && !connection.performContextMenuAction(android.R.id.selectAll)) return@runCatching false
                     if (!allowed.get() || ime.editorSession != expectedSession) return@runCatching false

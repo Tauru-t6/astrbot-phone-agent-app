@@ -167,7 +167,7 @@ internal fun UiTaskSheet(appState: AppState, onShowApprovals: (() -> Unit)? = nu
                             }
                             searchTemplate -> appState.proposeUiTask(UiTaskRequest(
                                 "打开哔哩哔哩并搜索${searchQuery.trim()}，显示相关视频结果",
-                                "tv.danmaku.bili", listOf(searchQuery.trim()), listOf(searchQuery.trim(), "综合", "视频"),
+                                "tv.danmaku.bili", listOf(searchQuery.trim()), listOf(searchQuery.trim(), "综合"),
                                 count, selectedDeviceId, "search_results"))
                             else -> appState.proposeUiTask(UiTaskRequest(goal.trim(), targetPackage.trim(), lines(allowedText),
                                 lines(successText), count, selectedDeviceId))

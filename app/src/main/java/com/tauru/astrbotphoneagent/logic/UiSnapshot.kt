@@ -9,6 +9,10 @@ import org.xml.sax.InputSource
 
 internal class UiFailure(val code: String, message: String) : Exception(message)
 
+/** Accessibility text may describe an empty editor's explicit hint. */
+internal fun editorTextMatches(existing: String, expectedText: String, editorHint: String): Boolean =
+    existing == expectedText || (existing.isEmpty() && editorHint == expectedText)
+
 internal data class UiNode(
     val id: String, val resourceId: String, val text: String, val description: String,
     val className: String, val packageName: String, val bounds: List<Int>,
@@ -23,7 +27,12 @@ internal data class UiNode(
         "focused" to focused, "password" to password, "enabled" to enabled, "scrollable" to scrollable,
     )
     fun targetSignature() = listOf(resourceId, text, description, className, packageName, bounds,
-        clickable, editable, focusable, focused, password, enabled, scrollable, contentFingerprint).joinToString("\u0000")
+        clickable, editable, focusable, focused, password, enabled, scrollable,
+        // A labelled search container can rotate suggested queries while its
+        // action remains search. Other controls bind their child labels too.
+        if (!editable && resourceId.contains("search", ignoreCase = true) &&
+            (text + description).let { it.contains("搜索") || it.contains("search", ignoreCase = true) }) ""
+        else contentFingerprint).joinToString("\u0000")
     fun structure() = listOf(resourceId, className, packageName, bounds, clickable, editable,
         focusable, focused, password, enabled, scrollable).joinToString("\u0000")
 }
@@ -172,13 +181,21 @@ internal object UiActionPolicy {
         if (kind == "scroll" && args["direction"] !in setOf("up", "down", "left", "right")) throw UiFailure("bad_args", "滚动方向无效")
     }
     fun target(before: UiSnapshot, fresh: UiSnapshot, args: Map<String, String>): UiNode? {
-        if (fresh.packageName != before.packageName || fresh.fingerprint != before.fingerprint)
+        if (fresh.packageName != before.packageName || fresh.width != before.width || fresh.height != before.height)
             throw UiFailure("ui_snapshot_changed", "界面已改变，请重新观察后决定动作")
-        if (args["kind"] == "back") return null
+        if (args["kind"] == "back") {
+            if (fresh.fingerprint != before.fingerprint) throw UiFailure("ui_snapshot_changed", "界面已改变，请重新观察后决定动作")
+            return null
+        }
         val node = before.nodes.singleOrNull { it.id == args["node_id"] }
             ?: throw UiFailure("ui_node_missing", "目标节点不存在")
-        val current = fresh.nodes.singleOrNull { it.id == node.id }
-        if (current == null || current.targetSignature() != node.targetSignature()) throw UiFailure("ui_snapshot_changed", "目标节点已改变")
+        // Dynamic feeds can insert unrelated nodes and renumber IDs. Locate
+        // the exact approved target again in the new hierarchy, including its
+        // bounds and label, rather than reusing an old index or coordinates.
+        val matches = fresh.nodes.filter { it.targetSignature() == node.targetSignature() }
+        if (matches.isEmpty()) throw UiFailure("ui_snapshot_changed", "目标节点已改变")
+        if (matches.size != 1) throw UiFailure("ui_target_ambiguous", "目标节点存在重叠，请重新观察")
+        val current = matches.single()
         if (!node.enabled || node.password) throw UiFailure("ui_action_blocked", "不能操作禁用或密码输入节点")
         if (args["kind"] == "tap" && !(node.clickable || node.editable)) throw UiFailure("ui_action_blocked", "目标节点不可点击")
         if (args["kind"] == "input_text" && (!node.editable || !node.focused)) throw UiFailure("ui_input_not_focused", "请先点击并重新观察输入框")
@@ -193,6 +210,6 @@ internal object UiActionPolicy {
             throw UiFailure("ui_target_obscured", "目标被系统窗口或输入法遮挡，请重新观察")
         val same = fresh.nodes.count { it.structure() == node.structure() }
         if (same != 1) throw UiFailure("ui_target_ambiguous", "目标节点存在重叠，请重新观察")
-        return node
+        return current
     }
 }
