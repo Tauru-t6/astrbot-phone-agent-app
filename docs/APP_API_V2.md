@@ -279,3 +279,15 @@ On the app side `screen_text` is bounded too: the uiautomator dump runs under
 dump so a stale one is never read, and the top activity's `dumpsys` view
 hierarchy is the fallback. If both sources produce nothing the command fails
 with `error_code: ui_dump_unavailable` instead of holding the connection open.
+
+## App 0.5.0 additions
+
+Task proposals append optional `allow_vision`, `remember_recipe` and `result_spec={fields:[title,author,duration,url],max_items:3,required_items:1}`. Approval sheets show these data/operation scopes. `summary.ui_results={verified:true,items:[...]}` renders verified results; missing values remain missing. `summary.resume_from` identifies the parent.
+
+`GET /app/routines?device_id=...` loads templates and schedules. Template save/delete and schedule operations POST `/app/routines`; parameterized execution POSTs `/app/routines/propose`. Resuming POSTs `/app/task/resume` with `run_id`, requester identity and `manual_state_confirmed` when the prior result is unknown. Every manual execution/resume produces a new approval. Bot schedules require explicit full-scope approval and report a finite model-call quota.
+
+Pairing QR JSON is `{type:phone_control_pairing,version:1,endpoint,code,expires_at,device_kind}`. The App accepts HTTPS or literal private/Tailscale HTTP endpoints, no user-info/query/fragment/path. POST `/pair/redeem` sends one-time code and local identity; the response must match the same device/kind and `endpoint/device-api`. The App saves the per-device bearer and command token and starts a direct connection. It never copies administrator credentials from a QR. Explicit `device_revoked` clears paired credentials and stops command/relay transport; transient errors do not erase settings.
+
+`ui_visual_snapshot` receives only `expected_package`; it returns normal snapshot fields plus `source=ocr`, `screenshot_hash` and `screenshot={format:jpeg,data_base64,width,height}`. OCR bounds use actual display pixels, while the JPEG is downscaled to <=1280px. Visual snapshots are one-use in-memory leases and are not saved in receipts/timelines. `ui_visual_action` accepts the usual snapshot/node identifiers and only tap/back. It recaptures and hashes all display pixels, confirms foreground and focused window, and rejects changed or sensitive targets. It cannot accept arbitrary model coordinates or input into OCR-inferred fields.
+
+`entry_point` defaults to `app_home`. Custom tasks targeting `com.android.settings` may choose `display_settings` or `wifi_settings`; the phone maps these to fixed Android action constants with an explicit target package. It rejects arbitrary URI/component strings and presets for other packages. The complete approval shows the entry point.

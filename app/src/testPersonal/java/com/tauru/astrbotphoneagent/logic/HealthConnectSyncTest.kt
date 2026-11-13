@@ -15,6 +15,7 @@ class HealthConnectSyncTest {
         val uploads: MutableList<HealthUpload> = Collections.synchronizedList(mutableListOf())
         var uploadHook: suspend () -> Unit = {}
         var permissionHook: suspend () -> Set<String> = { setOf("steps") }
+        var readEmpty = false
         val sync = HealthConnectSync(this, this, this)
 
         override suspend fun healthSettings() = settings
@@ -23,6 +24,9 @@ class HealthConnectSyncTest {
                 enabled = updates["health_connect_enabled"]?.toBoolean() ?: settings.enabled,
                 clearPending = updates["health_clear_pending"]?.toBoolean() ?: settings.clearPending,
                 lastUpload = updates["health_last_upload"]?.toLong() ?: settings.lastUpload,
+                lastAttempt = updates["health_last_attempt"]?.toLong() ?: settings.lastAttempt,
+                lastAttemptStatus = updates["health_last_attempt_status"] ?: settings.lastAttemptStatus,
+                lastRecordDate = updates["health_last_record_date"] ?: settings.lastRecordDate,
                 originPackage = updates["health_origin_package"] ?: settings.originPackage,
             )
         }
@@ -30,7 +34,7 @@ class HealthConnectSyncTest {
         override suspend fun grantedTypes() = permissionHook()
         override suspend fun read(types: Set<String>, zone: ZoneId, originPackage: String): List<HealthDay> {
             events += "read:$originPackage"
-            return listOf(HealthDay("2026-11-10", mapOf("steps" to 12.0)))
+            return if(readEmpty)emptyList()else listOf(HealthDay("2026-11-10", mapOf("steps" to 12.0)))
         }
         override suspend fun clear() {
             events += "clear"
@@ -116,5 +120,28 @@ class HealthConnectSyncTest {
         assertEquals("permission_denied", f.uploads.single().status)
         assertTrue(f.uploads.single().days.isEmpty())
         assertTrue(f.sync.state.value.latestMetrics.isEmpty())
+        assertEquals(0L,f.settings.lastUpload)
+        assertTrue(f.settings.lastAttempt>0)
+    }
+
+    @Test fun failedUploadKeepsLastSuccessAndRecordsNewAttempt() = runBlocking {
+        val f=Fixture();assertTrue(f.sync.sync().success);val success=f.settings.lastUpload
+        f.uploadHook={throw IOException("synthetic")}
+        assertFalse(f.sync.sync().success)
+        assertEquals(success,f.settings.lastUpload)
+        assertTrue(f.sync.state.value.lastAttemptAtEpochMs>=success)
+        assertNotNull(f.sync.state.value.lastAttemptError)
+        assertEquals("upload_failed",f.settings.lastAttemptStatus)
+        f.sync.refresh()
+        assertNotNull(f.sync.state.value.lastAttemptError)
+    }
+
+    @Test fun emptyRecordReceiptKeepsSuccessHistoryButCannotAppearFreshAfterRefresh() = runBlocking {
+        val f=Fixture();assertTrue(f.sync.sync().success);val success=f.settings.lastUpload
+        f.readEmpty=true;f.sync.sync();f.sync.refresh()
+        assertEquals(success,f.settings.lastUpload)
+        assertEquals("empty",f.settings.lastAttemptStatus)
+        assertEquals("",f.sync.state.value.latestDate)
+        assertNotNull(f.sync.state.value.lastAttemptError)
     }
 }

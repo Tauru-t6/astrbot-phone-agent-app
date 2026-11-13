@@ -4,6 +4,7 @@ package com.tauru.astrbotphoneagent.logic
 internal object ApiFailureMessage {
     fun forResponse(status: Int?, code: String?, health: Boolean, task: Boolean = false): String {
         val message = when {
+            code in setOf("pair_expired","pair_used","pair_expired_or_used","device_already_exists","device_kind_mismatch","device_revoked","owner_reauthentication_required") -> pairingFailure(code.orEmpty())
             status == 401 || code == "unauthorized" -> "登录凭据已过期，请更新插件 JWT"
             status == 404 -> "接口不存在，请检查插件地址并升级服务器插件"
             task -> when (code) {
@@ -22,6 +23,11 @@ internal object ApiFailureMessage {
                 "personal_device_pinned", "bot_device_cannot_be_personal" -> "已有个人手机用途固定，Bot 设备不能替换个人手机"
                 "invalid_device_label", "invalid_device_role" -> "设备名称或用途不符合服务器要求"
                 "model_unavailable" -> "服务器没有可用的任务模型，请检查模型配置"
+                "manual_state_confirmation_required" -> "上一步结果未知，请先检查手机当前状态，再确认续跑"
+                "task_not_resumable","resume_budget_exhausted","resume_already_created" -> "这项任务不能继续、预算已耗尽或已经创建续跑提案，请刷新记录"
+                "private_session_required" -> "请先在私聊中联系机器人，建立通知会话后再启用结果通知"
+                "routines_disabled","schedule_disabled" -> "服务器尚未开启自主日程"
+                "unknown_template","template_not_found","unknown_schedule" -> "收藏或日程已不存在，请刷新"
                 "allowed_user_required", "forbidden", "unauthorized" -> "服务器未允许此任务，请检查用户授权、令牌和功能开关"
                 "storage_unavailable", "device_registry_invalid", "device_binding_mismatch" -> "服务器暂时无法安全保存或读取任务，请检查服务器日志"
                 "not_found" -> "任务已不存在，请刷新列表"

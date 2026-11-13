@@ -14,5 +14,8 @@ internal data class HealthSyncSettings(
     val enabled: Boolean = false,
     val clearPending: Boolean = false,
     val lastUpload: Long = 0,
+    val lastAttempt: Long = 0,
+    val lastAttemptStatus: String = "",
+    val lastRecordDate: String = "",
     val originPackage: String = HealthSource.DEFAULT_PACKAGE,
 )

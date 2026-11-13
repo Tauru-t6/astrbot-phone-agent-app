@@ -50,6 +50,8 @@ internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSet
     val focusManager = LocalFocusManager.current
     var relayExpanded by rememberSaveable { mutableStateOf(settings.relayUrl.isNotBlank()) }
     var diagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
+    var showPairing by remember { mutableStateOf(false) }
+    if (showPairing) { PairingSheet(appState,onDismiss={showPairing=false},onPaired={showPairing=false;onDismiss()}); return }
     var discardDialog by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true, confirmValueChange = { busy == null })
     val pluginError = connectionAddressError(pluginUrl.text)
@@ -96,11 +98,12 @@ internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSet
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text("连接 AstrBot，再按需要设置手机控制与中继。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedButton(onClick={showPairing=true},enabled=busy==null&&!hasChanges,modifier=Modifier.fillMaxWidth()) { Text("扫描或粘贴配对码") }
                 FormSection("AstrBot 服务")
                 ConnectionAddressField("插件地址", pluginUrl, { pluginUrl = it; feedback = null }, pluginError, busy == null,
                     "http://服务器:6185/api/plug/astrbot_plugin_phone_agent", "填入完整的 Phone Control 插件地址。")
                 SecretField("插件 Token", pluginToken, { pluginToken = it; feedback = null }, settings.pluginTokenConfigured, busy == null,
-                    "使用面板登录后的 JWT；不要带 Bearer 前缀。", "已设置 · 留空保留")
+                    "配对后使用独立设备凭据；手动连接可使用面板 JWT。不要带 Bearer 前缀。", "已设置 · 留空保留")
                 FormSection("手机控制")
                 SecretField("手机控制 Token", sharedToken, { sharedToken = it; feedback = null }, settings.sharedTokenConfigured, busy == null,
                     "与插件的 app_shared_token 一致，用于接收手机指令。", "已设置 · 留空保留")
@@ -115,6 +118,10 @@ internal fun ConnectionSettingsSheet(appState: AppState, settings: ConnectionSet
                 ExpandableHeading("连接诊断", if (diagnostics.pluginConnected) "插件已连接" else "待连接", diagnosticsExpanded, busy == null) { diagnosticsExpanded = !diagnosticsExpanded }
                 if (diagnosticsExpanded) {
                     ConnectionDiagnostics(diagnostics, compact = true)
+                    Text("设备注册：${if(diagnostics.registered)"已注册" else "未确认"} · 输入法：${if(diagnostics.inputMethodEnabled)"已启用" else "未启用"}",style=MaterialTheme.typography.bodySmall)
+                    Text("Relay：${if(diagnostics.relayReachable)"可达" else if(settings.relayUrl.isBlank())"未配置" else "尚未连通"}",style=MaterialTheme.typography.bodySmall)
+                    if(diagnostics.checkedAtEpochMs>0) Text("最近自检：${relativeTime(diagnostics.checkedAtEpochMs)}",style=MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick={perform("自检中"){appState.runConnectionCheck()}},enabled=busy==null&&!hasChanges) { Text("重新注册并检查设备") }
                     Text(when {
                         settings.relayUrl.isBlank() -> "Relay 未配置"
                         !settings.relayTokenConfigured -> "Relay 地址已保存，令牌待填写"

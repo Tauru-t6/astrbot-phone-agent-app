@@ -16,6 +16,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.ui.platform.LocalUriHandler
+import com.tauru.astrbotphoneagent.data.TaskRunSummary
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,6 +50,11 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
     var decisionNotice by remember { mutableStateOf("") }
     var showUiTask by remember { mutableStateOf(false) }
     var decisionBusy by remember { mutableStateOf(false) }
+    var showLibrary by remember { mutableStateOf(false) }
+    var saveRun by remember { mutableStateOf<TaskRunSummary?>(null) }
+    var resumeRun by remember { mutableStateOf<TaskRunSummary?>(null) }
+    val uriHandler=LocalUriHandler.current
+    if(showLibrary){TaskLibrarySheet(appState){showLibrary=false};return}
 
     if (showUiTask) {
         UiTaskSheet(appState) { showUiTask = false }
@@ -83,6 +92,7 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                 detail = "选择一台手机和一个 App，设置允许输入的文字与步骤上限。执行前需批准；关键步骤和无法确认的结果会停下交给你。",
             )
             Button(onClick = { showUiTask = true }, modifier = Modifier.fillMaxWidth()) { Text("发起手机界面任务") }
+            OutlinedButton(onClick={showLibrary=true},modifier=Modifier.fillMaxWidth()){Text("任务收藏与自主日程")}
 
             HorizontalDivider()
             Text("能力状态", style = MaterialTheme.typography.titleMedium)
@@ -310,6 +320,21 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                             if (taskRun.lastError.isNotBlank()) append("\n${taskRefusedLabel(taskRun.lastError)}")
                         },
                     )
+                    if(taskRun.resultsVerified&&taskRun.results.isNotEmpty()) {
+                        Text("已核验结果",style=MaterialTheme.typography.titleSmall)
+                        Text("来源：${if(taskRun.resultSource=="ocr")"截图文字识别" else "页面控件文字"}",style=MaterialTheme.typography.bodySmall)
+                        if(taskRun.missingResultFields.isNotEmpty())Text("页面未提供：${taskRun.missingResultFields.joinToString()}，对应字段留空。",style=MaterialTheme.typography.bodySmall)
+                        taskRun.results.forEachIndexed { index,result ->
+                            Text("${index+1}. ${result.title}",style=MaterialTheme.typography.bodyMedium)
+                            Text(listOf(result.author,result.duration).filter{it.isNotBlank()}.joinToString(" · "),style=MaterialTheme.typography.bodySmall)
+                            if(result.url.startsWith("https://")||result.url.startsWith("http://"))TextButton(onClick={runCatching{uriHandler.openUri(result.url)}}){Text("打开来源链接")}
+                        }
+                    }
+                    if(taskRun.mode=="ui") {
+                        if(taskRun.status=="done")TextButton(enabled=!decisionBusy,onClick={saveRun=taskRun}){Text("收藏为模板")}
+                        if(taskRun.canResume)TextButton(enabled=!decisionBusy,onClick={resumeRun=taskRun}){Text("接手后重新观察并继续")}
+                        if(taskRun.parentRunId.isNotBlank())Text("续跑自 ${taskRun.parentRunId.take(8)}，使用新的审批范围",style=MaterialTheme.typography.bodySmall)
+                    }
                     if (taskRun.status in setOf("planning", "running", "executing", "verifying", "waiting_approval")) {
                         TextButton(enabled = !decisionBusy, onClick = {
                             decisionBusy = true
@@ -340,6 +365,17 @@ internal fun AutonomySheet(appState: AppState, onDismiss: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall, color = muted)
         }
     }
+    saveRun?.let { run -> SaveTemplateDialog(appState,run,{saveRun=null}){decisionNotice=it.message} }
+    resumeRun?.let { run ->
+        var confirmed by remember(run.runId){mutableStateOf(false)}
+        AlertDialog(onDismissRequest={resumeRun=null},title={Text("从当前页面继续")},text={Column{
+            Text("已完成的动作不会重放。服务器会创建同一设备、同一应用的新任务，再次核对范围后才执行。")
+            if(run.unknownOutcome){Text("上一步执行结果未知，请先检查手机页面。")
+                Row{Checkbox(confirmed,{confirmed=it});Text("我已检查并处理当前状态")}}
+        }},confirmButton={TextButton(enabled=!decisionBusy&&(!run.unknownOutcome||confirmed),onClick={
+            decisionBusy=true;scope.launch{try{decisionNotice=appState.resumeServerTask(run.runId,confirmed).message;resumeRun=null}finally{decisionBusy=false}}
+        }){Text("生成续跑提案")}},dismissButton={TextButton(onClick={resumeRun=null}){Text("取消")}})
+    }
 }
 
 @Composable
@@ -369,7 +405,11 @@ private fun approvalReviewable(approval: TaskApproval): Boolean = approval.mode 
     (approval.goal.isNotBlank() && approval.deviceId.isNotBlank() && approval.packageName.isNotBlank() &&
         approval.deviceRole in setOf("personal", "bot") && approval.successTexts.size in 1..5 &&
         approval.allowedTexts.size <= 5 && (approval.allowedTexts + approval.successTexts).all { it.length in 1..200 && it.none(Char::isISOControl) } &&
-        approval.completionMode in setOf("visible_text", "search_results") && approval.maxSteps in 1..12)
+        approval.completionMode in setOf("visible_text", "search_results") && approval.maxSteps in 1..12 &&
+        approval.entryPoint in setOf("app_home","display_settings","wifi_settings")&&
+        (approval.entryPoint=="app_home"||approval.packageName=="com.android.settings")&&
+        (approval.resultFields.isEmpty()||(approval.resultCount in 1..10&&approval.requiredResultCount in 1..approval.resultCount&&
+            approval.resultFields.all{it in setOf("title","author","duration","url")})))
 
 private fun approvalDetails(approval: TaskApproval, devices: List<com.tauru.astrbotphoneagent.data.RegisteredPhone>): String {
     if (approval.mode != "ui") return "批准后才执行；不点就自动放弃。"
@@ -378,10 +418,15 @@ private fun approvalDetails(approval: TaskApproval, devices: List<com.tauru.astr
     return buildString {
         append("执行设备：${device?.label ?: approval.deviceId} · ${deviceRoleLabel(approval.deviceRole)}")
         append("\n目标 App：${approval.packageName}")
+        append("\n打开入口：${when(approval.entryPoint){"display_settings"->"显示设置";"wifi_settings"->"Wi-Fi 设置";else->"应用首页"}}")
         append("\n允许输入：${approval.allowedTexts.joinToString("、").ifBlank { "不输入文字" }}")
         append("\n完成页面须同时出现：${approval.successTexts.joinToString("、")}")
         if (approval.completionMode == "search_results") append("；结果列表还须出现包含搜索词的标题")
         append("\n最多 ${approval.maxSteps} 步；只操作这一个 App。页面内容会交给你配置的模型用于规划。")
+        if(approval.resultFields.isNotEmpty())append("\n返回结果：至少 ${approval.requiredResultCount} 项、最多 ${approval.resultCount} 项；字段 ${approval.resultFields.joinToString()}，只保存页面核验过的内容。")
+        if(approval.allowVision)append("\n允许截图辅助：页面截图会交给任务模型，本地 OCR 文本节点用于定位。")
+        if(approval.rememberRecipe)append("\n成功后保存可复用的控件步骤，不保存输入原文作为固定动作。")
+        append(if(approval.notify)"\n完成或需要接手时，向发起任务的私聊回报核验结果。" else "\n不会主动发送本次任务结果到聊天。")
         append("\n登录、支付、消息发布等关键步骤会暂停。允许本次任务不代表允许这些后续操作。")
     }
 }
@@ -451,6 +496,9 @@ private fun taskStatusLabel(run: com.tauru.astrbotphoneagent.data.TaskRunSummary
 }
 
 private fun taskRefusedLabel(reason: String): String = when (reason) {
+    "ui_model_timeout" -> "模型响应超时，可检查页面后重新观察并继续"
+    "ui_visual_action_unsupported" -> "截图模式仅支持文字节点点击或返回，请手动完成输入与拖动"
+    "device_revoked" -> "设备凭据已撤销，请重新配对"
     "user_active" -> "你当时正在用手机"
     "stale_observation" -> "观察过期"
     "snapshot_stale", "stale_snapshot" -> "页面已变化，需要重新观察"

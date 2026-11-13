@@ -11,7 +11,7 @@ class RelayTargetingTest {
             assertTrue(action, targetDeviceMismatch(command, "bot-phone", requireTargetDevice = true))
             assertNotNull(action, commandValidationError(command, 1001.0, requireTargetDevice = true))
             assertFalse(action, targetDeviceMismatch(command, "personal-phone", requireTargetDevice = false))
-            if (action !in setOf("ui_snapshot", "ui_action"))
+            if (action !in setOf("ui_snapshot", "ui_action","ui_visual_snapshot","ui_visual_action"))
                 assertNull(action, commandValidationError(command, 1001.0, requireTargetDevice = false))
             val targeted = command.copy(targetDeviceId = "bot-phone")
             assertFalse(action, targetDeviceMismatch(targeted, "bot-phone", requireTargetDevice = true))

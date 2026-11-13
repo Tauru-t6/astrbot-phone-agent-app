@@ -85,6 +85,27 @@ class PluginBridge(
         return refreshServerState()
     }
 
+    suspend fun checkConnection(): Boolean {
+        registerOnce()
+        refreshLocalStatus()
+        postStatusHeartbeat()
+        return refreshServerState()
+    }
+
+    private suspend fun handleRevocation(error: Exception): Boolean {
+        if ((error as? AstrBotClient.ApiException)?.code != "device_revoked" || !config.pluginJwt().startsWith("pcd_")) return false
+        withContext(NonCancellable) {
+            config.update(mapOf("plugin_jwt" to "", "shared_token" to "", "relay_token" to "", "relay_base_url" to ""))
+            server.stop()
+            jobs.forEach { it.cancel() }
+            jobs.clear()
+            _serverState.value = null
+            _bridgeState.update { it.copy(pluginConnected=false,registered=false,relayReachable=false,
+                serverPort=-1,lastError="此设备凭据已撤销，已停止接收命令，请重新配对") }
+        }
+        return true
+    }
+
     suspend fun refreshServerState(): Boolean = syncMutex.withLock {
         try {
             if (config.pluginUrl().isBlank() || config.pluginJwt().isBlank()) {
@@ -98,6 +119,7 @@ class PluginBridge(
             true
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
+            if (handleRevocation(error)) return@withLock false
             _bridgeState.update { it.copy(pluginConnected = false, lastError = safeError(error)) }
             false
         }
@@ -105,6 +127,12 @@ class PluginBridge(
 
     private suspend fun registerLoop() {
         while (currentCoroutineContext().isActive) {
+            registerOnce()
+            delay(60_000)
+        }
+    }
+
+    private suspend fun registerOnce() {
             try {
                 val token = config.sharedToken()
                 if (token.isNotBlank() && config.pluginUrl().isNotBlank() && config.pluginJwt().isNotBlank()) {
@@ -122,9 +150,9 @@ class PluginBridge(
                     _bridgeState.update { it.copy(registered = registered) }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { _bridgeState.update { it.copy(registered = false) } }
-            delay(60_000)
-        }
+            catch (error: Exception) {
+                if (!handleRevocation(error)) _bridgeState.update { it.copy(registered = false,lastError=safeError(error)) }
+            }
     }
 
     private suspend fun relayLoop() {
@@ -211,6 +239,7 @@ class PluginBridge(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
+            if (handleRevocation(error)) return
             // A05: record a real error so the UI and diagnostics can show
             // heartbeat failure, not a silent no-op.
             _bridgeState.update { it.copy(lastError = "心跳上传失败：${safeError(error)}") }

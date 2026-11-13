@@ -13,8 +13,8 @@ android {
         applicationId = "com.tauru.astrbotphoneagent"
         minSdk = 26
         targetSdk = 34
-        versionCode = 32
-        versionName = "0.4.0"
+        versionCode = 33
+        versionName = "0.5.0"
     }
 
     flavorDimensions += "deviceRole"
@@ -100,6 +100,9 @@ dependencies {
     implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // Bundled recognition works on the Bot's GSI without Google Play Services.
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     // Only the personal APK contains Health Connect and its data readers.
     add("personalImplementation", "androidx.health.connect:connect-client:1.1.0")

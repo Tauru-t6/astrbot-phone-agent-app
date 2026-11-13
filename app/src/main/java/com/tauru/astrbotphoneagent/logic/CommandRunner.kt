@@ -37,7 +37,7 @@ class CommandRunner(private val context: Context, private val executor: ShizukuC
             if (targetDeviceMismatch(envelope, DeviceIdentity.deviceId(context), requireTargetDevice = BuildConfig.IS_BOT_DEVICE))
                 return@withLock envelope.result(false, code = "device_mismatch", error = "命令目标不是当前手机")
             val serializedIdentity = protocolJson.encodeToString(CommandEnvelope.serializer(), envelope)
-            val identity = if (envelope.action in setOf("ui_snapshot", "ui_action"))
+            val identity = if (envelope.action in setOf("ui_snapshot", "ui_action","ui_visual_snapshot","ui_visual_action"))
                 MessageDigest.getInstance("SHA-256").digest(serializedIdentity.toByteArray()).joinToString("") { "%02x".format(it) }
                 else serializedIdentity
             val saved = receipts.optJSONObject(envelope.commandId)
@@ -79,7 +79,7 @@ class CommandRunner(private val context: Context, private val executor: ShizukuC
     private fun record(envelope: CommandEnvelope, identity: String, result: ResultEnvelope) {
         // UI text never becomes a persisted command-receipt archive. A replay
         // after a snapshot response loss must explicitly request a fresh view.
-        val stored = if (envelope.action == "ui_snapshot" && result.success)
+        val stored = if (envelope.action in setOf("ui_snapshot","ui_visual_snapshot") && result.success)
             result.copy(success = false, output = null, errorCode = "ui_snapshot_expired", error = "请重新读取界面")
             else result
         receipts.put(envelope.commandId, JSONObject().put("identity", identity)

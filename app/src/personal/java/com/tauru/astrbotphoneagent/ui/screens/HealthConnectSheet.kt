@@ -96,8 +96,12 @@ internal fun HealthConnectSheet(appState: AppState, onDismiss: () -> Unit) {
                 labels.forEach { (key, label) -> state.latestMetrics[key]?.let { Text("$label：${String.format(Locale.getDefault(), "%.1f", it)}") } }
             }
             val dateFormat = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
-            Text("最近上传：" + if (state.lastUploadAtEpochMs > 0) dateFormat.format(Date(state.lastUploadAtEpochMs)) else "尚未上传")
+            Text("最近成功上传：" + if (state.lastUploadAtEpochMs > 0) dateFormat.format(Date(state.lastUploadAtEpochMs)) else "尚未成功上传")
             if (state.serverSourceMode == "health_db") Text("服务器当前固定使用 SQLite；本次上传已保存，可在服务端选择 auto 或 health_connect。", style = MaterialTheme.typography.bodySmall)
+            if(state.lastAttemptError!=null&&state.lastAttemptError!=state.error) Text(state.lastAttemptError.orEmpty(),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
+            if(state.lastAttemptAtEpochMs>0) Text("最近同步尝试：${relativeTime(state.lastAttemptAtEpochMs)}",style=MaterialTheme.typography.bodySmall)
+            if(state.lastUploadAtEpochMs>0&&System.currentTimeMillis()-state.lastUploadAtEpochMs>3*60*60_000)
+                Text("服务器摘要已超过 3 小时，请打开来源健康 App 同步后再重试。",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error)
             state.error?.let { FeedbackNotice(ActionFeedback(false, it)) }
             feedback?.let { FeedbackNotice(it) }
             Button(onClick = { scope.launch { feedback = appState.syncHealthConnect() } }, enabled = state.enabled && !state.syncing && !changing,

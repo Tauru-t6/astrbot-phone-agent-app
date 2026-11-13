@@ -34,6 +34,9 @@ class LogicConfig(private val context: Context) {
         val healthConnectEnabled = booleanPreferencesKey("health_connect_enabled")
         val healthClearPending = booleanPreferencesKey("health_clear_pending")
         val healthLastUpload = stringPreferencesKey("health_last_upload")
+        val healthLastAttempt = stringPreferencesKey("health_last_attempt")
+        val healthLastAttemptStatus = stringPreferencesKey("health_last_attempt_status")
+        val healthLastRecordDate = stringPreferencesKey("health_last_record_date")
         val healthOriginPackage = stringPreferencesKey("health_origin_package")
     }
 
@@ -112,6 +115,9 @@ class LogicConfig(private val context: Context) {
             enabled = prefs[Keys.healthConnectEnabled] ?: false,
             clearPending = prefs[Keys.healthClearPending] ?: false,
             lastUpload = prefs[Keys.healthLastUpload]?.toLongOrNull() ?: 0L,
+            lastAttempt = prefs[Keys.healthLastAttempt]?.toLongOrNull() ?: 0L,
+            lastAttemptStatus = prefs[Keys.healthLastAttemptStatus].orEmpty(),
+            lastRecordDate = prefs[Keys.healthLastRecordDate].orEmpty(),
             originPackage = prefs[Keys.healthOriginPackage] ?: HealthSource.DEFAULT_PACKAGE,
         )
     }
@@ -140,6 +146,9 @@ class LogicConfig(private val context: Context) {
                     "device_name" -> Keys.deviceName
                     "auto_approve_actions" -> Keys.autoApproveActions
                     "health_last_upload" -> Keys.healthLastUpload
+                    "health_last_attempt" -> Keys.healthLastAttempt
+                    "health_last_attempt_status" -> Keys.healthLastAttemptStatus
+                    "health_last_record_date" -> Keys.healthLastRecordDate
                     "health_origin_package" -> Keys.healthOriginPackage
                     else -> null
                 }

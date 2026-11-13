@@ -69,7 +69,7 @@ class ShizukuCommandExecutor(private val context: Context) {
         }
         return try {
             when (action) {
-                "open_app" -> shellOnce("monkey -p " + requirePackage(args) + " 1")
+                "open_app" -> shellOnce(AppEntryPoint.command(requirePackage(args),args["entry_point"]?:"app_home"))
                 "close_app" -> shellOnce("am force-stop " + requirePackage(args))
                 "foreground_app" -> CommandOutcome.Ok("""{"package":"""" + foregroundPackageOnly() + """"}""")
                 "lock_screen" -> shellOnce("input keyevent 223")
@@ -79,6 +79,8 @@ class ShizukuCommandExecutor(private val context: Context) {
                 "screen_text" -> screenText()
                 "ui_snapshot" -> uiSnapshot(args)
                 "ui_action" -> uiAction(args)
+                "ui_visual_snapshot" -> visualSnapshot(args)
+                "ui_visual_action" -> visualAction(args)
                 "tap" -> tap(args)
                 "long_press" -> longPress(args)
                 "swipe" -> swipe(args)
@@ -154,6 +156,8 @@ class ShizukuCommandExecutor(private val context: Context) {
     // ---------- bound UI observations and actions ----------
 
     private val uiLease = UiSnapshotLease()
+    private val visualReader=VisualSnapshotReader()
+    private var visualFrame:VisualFrame?=null
     private val componentPattern = Regex("[A-Za-z][A-Za-z0-9_.]*/[A-Za-z0-9_.]+")
 
     /** A live activity probe, deliberately without the stale UsageStats fallback. */
@@ -198,11 +202,69 @@ class ShizukuCommandExecutor(private val context: Context) {
     }
 
     private fun uiSnapshot(args: Map<String, String>): CommandOutcome {
+        visualFrame=null
         uiLease.invalidate()
         if (args.keys.any { it != "expected_package" }) throw UiFailure("bad_args", "界面读取含未支持参数")
         val snapshot = freshUi(args["expected_package"].orEmpty())
         uiLease.remember(snapshot)
         return CommandOutcome.Ok(JSONObject(snapshot.wire()).toString())
+    }
+
+    private fun checkedVisualBitmap(expected:String):Bitmap {
+        if(!UiSnapshotParser.validPackage(expected)||expected in setOf("com.android.settings","com.android.systemui","com.google.android.permissioncontroller","com.android.permissioncontroller"))
+            throw UiFailure("ui_sensitive_page","此应用不能使用截图操作，请使用结构化控件或手动接手")
+        if(screenInteractiveState()!=true||liveUiPackage()!=expected)throw UiFailure("ui_foreground_changed","截图前目标应用不在前台")
+        val window=(shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | head -3",3_000L) as? CommandOutcome.Ok)?.output.orEmpty()
+        val focused=window.lineSequence().firstOrNull{it.contains("mCurrentFocus")}.orEmpty()
+        if(PACKAGE_REGEX.find(focused)?.value!=expected)throw UiFailure("ui_target_obscured","目标窗口被遮挡，暂停截图操作")
+        // When semantic information exists it is an additional sensitive-page
+        // check, never a reason to bypass a password or foreground failure.
+        try { if(freshUi(expected).nodes.any{it.password})throw UiFailure("ui_sensitive_page","密码页面不允许截图操作") }
+        catch(error:UiFailure){if(error.code !in setOf("ui_snapshot_unavailable","ui_snapshot_invalid","ui_snapshot_too_large"))throw error}
+        val path="/data/local/tmp/phone_control_visual_${UUID.randomUUID().toString().replace("-","")}.png"
+        val raw=try {
+            if(shell("screencap -p $path",5_000L) is CommandOutcome.Fail)throw UiFailure("ui_snapshot_unavailable","截图失败")
+            shellBytes("cat $path")?:throw UiFailure("ui_snapshot_unavailable","截图读取失败")
+        }finally{shell("rm -f $path",2_000L)}
+        if(raw.size>16*1024*1024)throw UiFailure("too_large","截图过大")
+        if(liveUiPackage()!=expected)throw UiFailure("ui_foreground_changed","截图期间目标应用已变化")
+        val options=BitmapFactory.Options().apply{inJustDecodeBounds=true}
+        BitmapFactory.decodeByteArray(raw,0,raw.size,options)
+        if(options.outWidth !in 100..10000||options.outHeight !in 100..10000||options.outWidth.toLong()*options.outHeight>16_000_000)
+            throw UiFailure("too_large","截图尺寸超出支持范围")
+        return BitmapFactory.decodeByteArray(raw,0,raw.size)?:throw UiFailure("ui_snapshot_invalid","截图无法解码")
+    }
+
+    private fun visualSnapshot(args:Map<String,String>):CommandOutcome {
+        // This is a read. Keep the independent semantic lease for a model
+        // that uses the picture only to choose an existing semantic node;
+        // uiAction still re-dumps and verifies that target before dispatch.
+        visualFrame=null
+        if(args.keys!=setOf("expected_package"))throw UiFailure("bad_args","截图观察参数无效")
+        val expected=args.getValue("expected_package");val bitmap=checkedVisualBitmap(expected)
+        val frame=try{visualReader.read(bitmap,expected)}finally{bitmap.recycle()}
+        visualFrame=frame
+        return CommandOutcome.Ok(visualReader.wire(frame))
+    }
+
+    private fun visualAction(args:Map<String,String>):CommandOutcome {
+        UiActionPolicy.validate(args)
+        val previous=visualFrame;visualFrame=null
+        if(previous==null||previous.snapshot.id!=args["snapshot_id"]||previous.snapshot.packageName!=args["expected_package"])
+            throw UiFailure("ui_snapshot_expired","截图授权已过期")
+        val kind=args.getValue("kind")
+        val target=if(kind=="tap")previous.snapshot.nodes.singleOrNull{it.id==args["node_id"]}
+            ?:throw UiFailure("ui_node_missing","截图文字节点不存在")else null
+        val bitmap=checkedVisualBitmap(previous.snapshot.packageName)
+        val currentHash=try{visualReader.hash(bitmap)}finally{bitmap.recycle()}
+        VisualTextPolicy.checkAction(kind,previous.imageHash,currentHash,SystemClock.elapsedRealtime()-previous.snapshot.capturedMonotonicMs,target?.text.orEmpty())
+        if(liveUiPackage()!=previous.snapshot.packageName)throw UiFailure("ui_foreground_changed","操作前应用已变化")
+        val command=if(kind=="back")"input keyevent 4"else{
+            val b=target!!.bounds;"input tap ${(b[0]+b[2])/2} ${(b[1]+b[3])/2}"
+        }
+        if(shell(command,3_000L) is CommandOutcome.Fail)throw UiFailure("ui_command_failed","截图动作失败，请重新观察")
+        return CommandOutcome.Ok(JSONObject().put("dispatched",true).put("verified",false)
+            .put("snapshot_id",previous.snapshot.id).put("requires_new_observation",true).toString())
     }
 
     private fun uiAction(args: Map<String, String>): CommandOutcome {

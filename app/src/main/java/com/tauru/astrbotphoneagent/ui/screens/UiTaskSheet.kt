@@ -37,6 +37,11 @@ internal fun UiTaskSheet(appState: AppState, onShowApprovals: (() -> Unit)? = nu
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
     var showAutomation by rememberSaveable { mutableStateOf(false) }
+    var allowVision by rememberSaveable { mutableStateOf(false) }
+    var collectResults by rememberSaveable { mutableStateOf(false) }
+    var rememberRecipe by rememberSaveable { mutableStateOf(false) }
+    var resultCount by rememberSaveable { mutableStateOf("3") }
+    var entryPoint by rememberSaveable { mutableStateOf("app_home") }
     val capability = overview.uiTask
     val selectedDevice = overview.devices.firstOrNull { it.deviceId == selectedDeviceId }
     val packageLabel = capability.packages.firstOrNull { it.packageName == targetPackage }?.name
@@ -106,6 +111,29 @@ internal fun UiTaskSheet(appState: AppState, onShowApprovals: (() -> Unit)? = nu
 
             HorizontalDivider()
             Text("任务范围", style = MaterialTheme.typography.titleSmall)
+            if(!searchTemplate&&targetPackage=="com.android.settings") {
+                Text("打开入口",style=MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
+                    listOf("app_home" to "设置首页","display_settings" to "显示设置","wifi_settings" to "Wi-Fi 设置").forEach{(id,label)->
+                        FilterChip(entryPoint==id,onClick={entryPoint=id;edited()},label={Text(label)},enabled=!busy)
+                    }
+                }
+            }
+            Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                Checkbox(collectResults,{collectResults=it;edited()},enabled=!busy)
+                Text("返回页面中核验过的结果")
+            }
+            if(collectResults) OutlinedTextField(resultCount,{resultCount=it.take(2);edited()},label={Text("最多返回几项（1–10）")},
+                singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number))
+            Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                Checkbox(rememberRecipe,{rememberRecipe=it;edited()},enabled=!busy)
+                Text("成功后记住可复用的操作步骤")
+            }
+            Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                Checkbox(allowVision,{allowVision=it;edited()},enabled=!busy)
+                Text("允许截图辅助识别")
+            }
+            if(allowVision) Text("找不到结构化控件时，使用手机本地文字识别并将当前截图交给任务模型。只按已识别的文字节点点击；视觉模式不输入文字或拖动。执行设备还需单独允许两项视觉命令。",style=MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = searchTemplate, onClick = {
                     searchTemplate = true; targetPackage = "tv.danmaku.bili"; edited()
@@ -142,7 +170,7 @@ internal fun UiTaskSheet(appState: AppState, onShowApprovals: (() -> Unit)? = nu
                 label = { Text("完成时页面需要出现的文字") }, supportingText = { Text("每行一项，最多 5 项。输入框里的文字不能单独证明任务完成。") },
                 placeholder = { Text("例如搜索结果页上的内容或分类名称") }, minLines = 1, maxLines = 5,
                 enabled = !busy, modifier = Modifier.fillMaxWidth())
-            if (showAdvanced && searchTemplate) Text("完成时需同时出现搜索词、综合和视频分类，且结果中有相关标题。", style = MaterialTheme.typography.bodySmall)
+            if (showAdvanced && searchTemplate) Text("完成时需出现综合分类与匹配搜索词的结果标题，并重新读屏确认。", style = MaterialTheme.typography.bodySmall)
             if (showAdvanced) OutlinedTextField(value = stepCount, onValueChange = { stepCount = it.filter(Char::isDigit).take(2); edited() },
                 label = { Text("最多执行几步") }, supportingText = { Text("服务器允许 1–${capability.maxSteps} 步；每步之后重新观察。") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true,
@@ -168,9 +196,14 @@ internal fun UiTaskSheet(appState: AppState, onShowApprovals: (() -> Unit)? = nu
                             searchTemplate -> appState.proposeUiTask(UiTaskRequest(
                                 "打开哔哩哔哩并搜索${searchQuery.trim()}，显示相关视频结果",
                                 "tv.danmaku.bili", listOf(searchQuery.trim()), listOf(searchQuery.trim(), "综合"),
-                                count, selectedDeviceId, "search_results"))
+                                count, selectedDeviceId, "search_results",allowVision,
+                                if(collectResults)listOf("title","author","duration","url") else emptyList(),
+                                resultCount.toIntOrNull()?.coerceIn(1,10)?:3,rememberRecipe))
                             else -> appState.proposeUiTask(UiTaskRequest(goal.trim(), targetPackage.trim(), lines(allowedText),
-                                lines(successText), count, selectedDeviceId))
+                                lines(successText), count, selectedDeviceId,allowVision=allowVision,
+                                resultFields=if(collectResults)listOf("title","author","duration","url") else emptyList(),
+                                resultCount=resultCount.toIntOrNull()?.coerceIn(1,10)?:3,rememberRecipe=rememberRecipe,
+                                entryPoint=if(targetPackage=="com.android.settings")entryPoint else "app_home"))
                         }
                         submitted = feedback?.success == true
                     } finally { busy = false }

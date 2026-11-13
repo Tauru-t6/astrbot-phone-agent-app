@@ -80,6 +80,8 @@ fun SettingsScreen(appState: AppState) {
             SettingsRow(Icons.Outlined.PrivacyTip, "隐私与自动化", if (BuildConfig.IS_BOT_DEVICE) "操作确认与授权" else "通知转发、操作确认与授权", onClick = { panel = "automation" })
             HorizontalDivider(Modifier.padding(start = 58.dp), color = colors.outlineVariant.copy(alpha = .5f))
             SettingsRow(Icons.Outlined.AutoAwesome, "自主功能", if (BuildConfig.IS_BOT_DEVICE) "界面任务与执行审批" else "界面任务、执行审批与日常守护", onClick = { panel = "autonomy" })
+            HorizontalDivider(Modifier.padding(start = 58.dp), color = colors.outlineVariant.copy(alpha = .5f))
+            SettingsRow(Icons.Outlined.TaskAlt,"任务收藏与日程","复用任务、查看 Bot 授权日程",onClick={panel="library"})
         }
         Text("Phone Control${if (BuildConfig.IS_BOT_DEVICE) " Bot" else ""}  ·  ${BuildConfig.VERSION_NAME}", Modifier.align(Alignment.CenterHorizontally), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
     }
@@ -91,6 +93,7 @@ fun SettingsScreen(appState: AppState) {
         "profile" -> if (!BuildConfig.IS_BOT_DEVICE) companion?.let { ProfileSettingsSheet(appState, it) { panel = null } }
         "automation" -> AutomationSettingsSheet(appState) { panel = null }
         "autonomy" -> AutonomySheet(appState) { panel = null }
+        "library" -> TaskLibrarySheet(appState) { panel = null }
     }
 }
 

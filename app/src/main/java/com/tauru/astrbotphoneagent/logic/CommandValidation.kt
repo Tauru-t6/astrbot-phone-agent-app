@@ -9,7 +9,7 @@ internal fun commandValidationError(command: CommandEnvelope, nowSeconds: Double
     !Regex("[A-Za-z0-9._-]{1,80}").matches(command.commandId) -> "命令 ID 无效"
     command.action !in COMMAND_ACTIONS -> "不支持的命令"
     command.targetDeviceId != null && !Regex("[A-Za-z0-9._-]{1,128}").matches(command.targetDeviceId) -> "命令目标设备无效"
-    (requireTargetDevice || command.action in setOf("ui_snapshot", "ui_action")) && command.targetDeviceId == null -> "命令必须指定目标设备"
+    (requireTargetDevice || command.action in setOf("ui_snapshot", "ui_action","ui_visual_snapshot","ui_visual_action")) && command.targetDeviceId == null -> "命令必须指定目标设备"
     command.deadline !in 1..300 -> "命令时限无效"
     !command.createdAtEpochSec.isFinite() -> "命令时间无效"
     command.createdAtEpochSec > nowSeconds + 300 -> "设备与服务器时间不一致"

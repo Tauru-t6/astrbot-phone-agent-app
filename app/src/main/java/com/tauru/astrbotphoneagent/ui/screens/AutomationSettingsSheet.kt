@@ -38,6 +38,8 @@ import kotlinx.coroutines.launch
 private val ACTION_LABELS = listOf(
     Triple("ui_snapshot", "读取界面节点", "将目标 App 的界面内容发送给已连接服务器的任务模型。默认关闭免确认。"),
     Triple("ui_action", "操作界面", "点击、输入、滚动或返回。默认关闭免确认；开启后信任该服务器发送的这一类命令。"),
+    Triple("ui_visual_snapshot", "截图辅助观察", "读取目标应用截图，在本机识别文字，并把画面交给任务模型。需另行选择截图辅助任务。"),
+    Triple("ui_visual_action", "截图文字节点操作", "点击已识别的文字节点或返回，截图变化时停止。默认关闭免确认。"),
     Triple("screenshot", "截图", "把手机屏幕画面发给你。默认允许。"),
     Triple("screen_text", "读取屏幕文字", "读取当前界面上的文字内容。"),
     Triple("tap", "点击屏幕", "在屏幕上按坐标点击。"),

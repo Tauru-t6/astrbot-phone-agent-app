@@ -221,11 +221,23 @@ class AstrBotClient(private val config: LogicConfig) {
             .put("success_texts", org.json.JSONArray(request.successTexts))
             .put("max_steps", request.maxSteps)
             .put("completion_mode", request.completionMode)
+            .put("allow_vision",request.allowVision).put("remember_recipe",request.rememberRecipe)
+            .put("entry_point",request.entryPoint)
+            .also { body -> if(request.resultFields.isNotEmpty()) body.put("result_spec",JSONObject()
+                .put("fields",org.json.JSONArray(request.resultFields)).put("max_items",request.resultCount).put("required_items",1)) }
             .put("requester_device_id", DeviceIdentity.deviceId())
             .also { if (request.deviceId.isNotBlank()) it.put("device_id", request.deviceId) })
 
     suspend fun cancelServerTask(runId: String): JSONObject =
         pluginRequest("/app/task/cancel", JSONObject().put("run_id", runId).put("requester_device_id", DeviceIdentity.deviceId()))
+
+    suspend fun fetchTaskLibrary(): JSONObject = pluginRequest("/app/routines?device_id=${DeviceIdentity.deviceId()}")
+    suspend fun updateTaskLibrary(payload: JSONObject): JSONObject = pluginRequest("/app/routines",payload.put("requester_device_id",DeviceIdentity.deviceId()))
+    suspend fun proposeTaskTemplate(templateId:String,parameters:Map<String,String>,deviceId:String):JSONObject =
+        pluginRequest("/app/routines/propose",JSONObject().put("template_id",templateId).put("parameters",JSONObject(parameters))
+            .put("device_id",deviceId).put("requester_device_id",DeviceIdentity.deviceId()))
+    suspend fun resumeServerTask(runId:String,confirmed:Boolean):JSONObject = pluginRequest("/app/task/resume",JSONObject()
+        .put("run_id",runId).put("manual_state_confirmed",confirmed).put("requester_device_id",DeviceIdentity.deviceId()))
 
     suspend fun setDeviceRole(deviceId: String, role: String, label: String): JSONObject =
         pluginRequest("/app/device/role", JSONObject().put("device_id", deviceId)
@@ -280,7 +292,7 @@ class AstrBotClient(private val config: LogicConfig) {
         val body = executeForBody(builder.build()) ?: throw ApiException("服务器返回了空响应")
         if (!body.optBoolean("success")) {
             val code = body.optString("error_code")
-            throw ApiException(ApiFailureMessage.forResponse(null, code, path.startsWith("/app/health/"), isTaskPath(path)))
+            throw ApiException(ApiFailureMessage.forResponse(null, code, path.startsWith("/app/health/"), isTaskPath(path)),code)
         }
         return body
     }
@@ -360,7 +372,7 @@ class AstrBotClient(private val config: LogicConfig) {
     }
 
     private fun isTaskPath(path: String): Boolean = path.contains("/app/task/") ||
-        path.contains("/app/ui-task/") || path.contains("/app/device/role")
+        path.contains("/app/ui-task/") || path.contains("/app/device/role") || path.contains("/app/routines")
 
     private val relayTaskIds = ConcurrentHashMap<String, String>()
 
@@ -383,7 +395,7 @@ class AstrBotClient(private val config: LogicConfig) {
                         if (!it.isSuccessful) {
                             val message = ApiFailureMessage.forResponse(it.code, parsed?.optString("error_code"),
                                 request.url.encodedPath.contains("/app/health/"), isTaskPath(request.url.encodedPath))
-                            if (continuation.isActive) continuation.resumeWithException(ApiException(message))
+                            if (continuation.isActive) continuation.resumeWithException(ApiException(message,parsed?.optString("error_code").orEmpty()))
                             return
                         }
                         if (continuation.isActive) {
@@ -400,7 +412,7 @@ class AstrBotClient(private val config: LogicConfig) {
         return body.optBoolean("success")
     }
 
-    class ApiException(message: String) : IOException(message)
+    class ApiException(message: String, val code: String = "") : IOException(message)
 
     private fun httpError(code: Int): String = when (code) {
         401, 403 -> "认证失败，请检查插件令牌或 API Key"

@@ -39,6 +39,9 @@ internal class HealthConnectSync internal constructor(
             _state.update { it.copy(originPackage = settings.originPackage, available = available,
                 enabled = settings.enabled, grantedTypes = granted, permissionsKnown = available,
                 lastUploadAtEpochMs = settings.lastUpload, clearPending = settings.clearPending,
+                lastAttemptAtEpochMs = settings.lastAttempt,
+                lastAttemptStatus = settings.lastAttemptStatus,lastAttemptError=healthAttemptMessage(settings.lastAttemptStatus),
+                latestDate=if(settings.lastAttemptStatus=="ok")settings.lastRecordDate else "",
                 error = if (!available) "请安装或更新 Health Connect" else if (granted.isEmpty()) "尚未授予健康读取权限" else null) }
             ActionFeedback(available, if (available) "权限状态已刷新" else "Health Connect 暂不可用")
         } catch (cancelled: CancellationException) { throw cancelled }
@@ -60,11 +63,12 @@ internal class HealthConnectSync internal constructor(
                 "health_origin_package" to selected,
                 "health_clear_pending" to "true",
                 "health_last_upload" to "0",
+                "health_last_attempt" to "0","health_last_attempt_status" to "","health_last_record_date" to "",
             ))
             syncAfterClear = previous.enabled
             _state.update { it.copy(originPackage = selected, latestMetrics = emptyMap(), latestDate = "",
                 lastReadAtEpochMs = 0, lastUploadAtEpochMs = 0, clearPending = true,
-                serverSourceMode = "", error = null) }
+                lastAttemptAtEpochMs=0,lastAttemptStatus="",lastAttemptError=null,serverSourceMode = "", error = null) }
             val cleared = clearRemote()
             if (!cleared.success) return@withLock cleared
             ActionFeedback(true, "已切换为 ${HealthSource.label(selected)}，旧来源快照已清除")
@@ -92,8 +96,10 @@ internal class HealthConnectSync internal constructor(
     private suspend fun clearRemote(): ActionFeedback {
         return try {
             remote.clear()
-            config.update(mapOf("health_clear_pending" to "false", "health_last_upload" to "0"))
-            _state.update { it.copy(clearPending = false, lastUploadAtEpochMs = 0, error = null) }
+            config.update(mapOf("health_clear_pending" to "false", "health_last_upload" to "0","health_last_attempt" to "0",
+                "health_last_attempt_status" to "","health_last_record_date" to ""))
+            _state.update { it.copy(clearPending = false, lastUploadAtEpochMs = 0,lastAttemptAtEpochMs=0,
+                lastAttemptStatus="",lastAttemptError=null,latestDate="",error = null) }
             ActionFeedback(true, "服务器健康快照已清除")
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) {
@@ -115,7 +121,8 @@ internal class HealthConnectSync internal constructor(
             val now = System.currentTimeMillis()
             if (!force && now - lastAttempt < 15 * 60_000) return@withLock ActionFeedback(true, "")
             lastAttempt = now
-            _state.update { it.copy(syncing = true, enabled = true, error = null) }
+            config.update(mapOf("health_last_attempt" to now.toString(),"health_last_attempt_status" to "in_progress"))
+            _state.update { it.copy(syncing = true, enabled = true, error = null,lastAttemptAtEpochMs=now,lastAttemptError=null,lastAttemptStatus="in_progress") }
             var types = emptySet<String>()
             var permissionsKnown = false
             var rows = emptyList<HealthDay>()
@@ -159,14 +166,20 @@ internal class HealthConnectSync internal constructor(
                     lastReadAtEpochMs = captured.toEpochMilli(), latestDate = rows.firstOrNull()?.date.orEmpty(),
                     latestMetrics = rows.firstOrNull()?.metrics.orEmpty(), error = readError) }
                 val sourceMode = remote.upload(HealthUpload(originPackage, captured, ZoneId.systemDefault(), status, types, rows))
-                config.update(mapOf("health_last_upload" to captured.toEpochMilli().toString()))
-                _state.update { it.copy(lastUploadAtEpochMs = captured.toEpochMilli(), serverSourceMode = sourceMode,
+                val healthSucceeded = status == "ok" && rows.isNotEmpty()
+                val attemptStatus=if(status=="ok"&&!healthSucceeded)"empty" else status
+                val updates=mutableMapOf("health_last_attempt_status" to attemptStatus)
+                if(healthSucceeded){updates["health_last_upload"]=captured.toEpochMilli().toString();updates["health_last_record_date"]=rows.first().date}
+                config.update(updates)
+                _state.update { it.copy(lastUploadAtEpochMs = if(healthSucceeded)captured.toEpochMilli() else it.lastUploadAtEpochMs, serverSourceMode = sourceMode,
+                    lastAttemptStatus=attemptStatus,lastAttemptError = readError?:healthAttemptMessage(attemptStatus),
                     error = readError ?: if (rows.isEmpty()) "所选健康 App 暂无可同步记录" else null) }
                 ActionFeedback(status == "ok", readError ?: if (rows.isEmpty()) "已连接，所选健康 App 暂无记录" else "健康摘要已同步到服务器")
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
                 val detail = if (error is AstrBotClient.ApiException) error.message ?: "服务器请求失败" else "上传失败，请检查 App 配置与网络"
-                _state.update { it.copy(error = detail) }
+                runCatching{config.update(mapOf("health_last_attempt_status" to "upload_failed"))}
+                _state.update { it.copy(error = detail,lastAttemptError=detail,lastAttemptStatus="upload_failed") }
                 ActionFeedback(false, if (readError == null) "读取完成，上传未成功：$detail" else "$readError；状态上传未成功：$detail")
             } finally { _state.update { it.copy(syncing = false) } }
         }

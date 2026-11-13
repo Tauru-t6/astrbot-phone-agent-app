@@ -50,6 +50,8 @@ class RealAppState(context: Context) : AppState {
     override val automationSettings = _automation.asStateFlow()
     private val _autonomyOverview = MutableStateFlow(AutonomyOverview())
     override val autonomyOverview = _autonomyOverview.asStateFlow()
+    private val _taskLibrary = MutableStateFlow(TaskLibraryState())
+    override val taskLibrary = _taskLibrary.asStateFlow()
     private val confirmations = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
     private val taskJobs = ConcurrentHashMap<String, Job>()
     private val actionIds = ConcurrentHashMap<String, String>()
@@ -151,6 +153,12 @@ class RealAppState(context: Context) : AppState {
                 error = connection.lastError,
                 shizukuDetail = connection.shizukuDetail,
                 usageAccess = connection.usageAccess,
+                registered = connection.registered,
+                relayReachable = connection.relayReachable,
+                inputMethodEnabled = (appContext.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                    .enabledInputMethodList.any { it.packageName == appContext.packageName },
+                deviceId = DeviceIdentity.deviceId(appContext),
+                checkedAtEpochMs = System.currentTimeMillis(),
             )
             _deviceStatus.value = DeviceStatus(
                 // Reaching /app/state is a working server route, so the UI can
@@ -259,6 +267,13 @@ class RealAppState(context: Context) : AppState {
                         deviceRole = taskScope?.optString("device_role", "").orEmpty(),
                         requesterDeviceId = item.textOrNull("requester_device_id") ?: taskScope?.textOrNull("requester_device_id").orEmpty(),
                         completionMode = taskScope?.textOrNull("completion_mode").orEmpty(),
+                        allowVision = taskScope?.optBoolean("allow_vision",false) ?: false,
+                        rememberRecipe = taskScope?.optBoolean("remember_recipe",false) ?: false,
+                        entryPoint = taskScope?.optString("entry_point","app_home") ?: "app_home",
+                        notify = taskScope?.optBoolean("notify",false) ?: false,
+                        resultFields = taskScope?.optJSONObject("result_spec")?.stringList("fields").orEmpty(),
+                        resultCount = taskScope?.optJSONObject("result_spec")?.optInt("max_items",0) ?: 0,
+                        requiredResultCount = taskScope?.optJSONObject("result_spec")?.optInt("required_items",1) ?: 0,
                     )
                 }.filter { approval -> approval.deviceId == localDeviceId || approval.requesterDeviceId == localDeviceId ||
                     (devices.size <= 1 && approval.deviceId.isBlank() && approval.mode != "ui") }
@@ -317,6 +332,15 @@ class RealAppState(context: Context) : AppState {
                         deviceId = item.textOrNull("device_id") ?: taskScope?.textOrNull("device_id").orEmpty(),
                         deviceRole = taskScope?.optString("device_role", "").orEmpty(),
                         requesterDeviceId = summary?.textOrNull("requester_device_id") ?: taskScope?.textOrNull("requester_device_id").orEmpty(),
+                        results = summary?.optJSONObject("ui_results")?.optJSONArray("items").objects().take(10).map {
+                            TaskResultItem(it.textOrNull("title").orEmpty(),it.textOrNull("author").orEmpty(),it.textOrNull("duration").orEmpty(),it.textOrNull("url").orEmpty()) },
+                        resultsVerified = summary?.optJSONObject("ui_results")?.optBoolean("verified",false) ?: false,
+                        resultSource=summary?.optJSONObject("ui_results")?.optString("source").orEmpty(),
+                        missingResultFields=summary?.optJSONObject("ui_results")?.stringList("missing_fields").orEmpty(),
+                        parentRunId = summary?.textOrNull("resume_from") ?: summary?.textOrNull("parent_run_id").orEmpty(),
+                        canResume = summary?.optString("mode")=="ui" && item.optString("status") in setOf("failed","waiting_approval") &&
+                            item.optString("last_error").isNotBlank(),
+                        unknownOutcome = item.optJSONArray("steps").objects().any { it.optString("status")=="unknown" },
                         steps = item.optJSONArray("steps")?.let { steps ->
                             (0 until steps.length()).mapNotNull { steps.optJSONObject(it) }.map { step ->
                                 TaskRunStep(
@@ -537,6 +561,8 @@ class RealAppState(context: Context) : AppState {
                     "send_notification" -> "${command.args["title"].orEmpty()}\n${command.args["text"].orEmpty()}".take(400)
                     "ui_snapshot" -> "读取 ${command.args["expected_package"].orEmpty().take(255)} 的当前界面，供本次任务规划下一步。"
                     "ui_action" -> "在 ${command.args["expected_package"].orEmpty().take(255)} 中${uiActionLabel(command.args["kind"].orEmpty())}。本次任务只能输入已批准范围内的文字。"
+                    "ui_visual_snapshot" -> "读取目标应用截图并在本机识别文字；画面会交给已连接服务器的任务模型。"
+                    "ui_visual_action" -> "根据本次截图中识别的文字节点点击或返回；页面变化就停止。"
                     else -> command.action
                 })
         upsertTask(task)
@@ -581,8 +607,8 @@ class RealAppState(context: Context) : AppState {
         } else null
         val summary = if (result.success) {
             when {
-                command.action == "ui_snapshot" -> "已读取结构化界面"
-                command.action == "ui_action" -> "已执行${uiActionLabel(command.args["kind"].orEmpty())}，等待任务核验"
+                command.action in setOf("ui_snapshot","ui_visual_snapshot") -> "已读取任务界面"
+                command.action in setOf("ui_action","ui_visual_action") -> "已执行${uiActionLabel(command.args["kind"].orEmpty())}，等待任务核验"
                 screenshot != null -> "截图 ${screenshot.width}×${screenshot.height}"
                 else -> result.output?.take(2000) ?: "已完成"
             }
@@ -651,6 +677,86 @@ class RealAppState(context: Context) : AppState {
     }
 
     override suspend fun approveTask(approvalId: String): ActionFeedback = decideTask(approvalId, true)
+
+    override suspend fun pairDevice(payload: String): ActionFeedback = settingsMutex.withLock {
+        ready.await()
+        try {
+            val parsed=PairingPayloadParser.parse(payload,if(BuildConfig.IS_BOT_DEVICE)"bot" else "personal")
+            val values=DevicePairingClient.redeem(parsed,DeviceIdentity.deviceId(appContext))
+            config.update(values)
+            bridge.stop();bridge.start()
+            ActionFeedback(true,"配对成功，已保存本设备专用凭据")
+        } catch(cancelled:CancellationException){throw cancelled}
+        catch(error:Exception){ActionFeedback(false,if(error is IllegalArgumentException)"配对内容无效、已过期或用途不匹配，请重新生成" else safeError(error))}
+    }
+
+    override suspend fun runConnectionCheck(): ActionFeedback {
+        ready.await()
+        return try {
+            val connected=withTimeout(45_000){bridge.checkConnection()}
+            val current=bridge.bridgeState.value
+            ActionFeedback(connected&&current.registered,if(!connected)current.lastError?:"服务器未连接"
+                else if(!current.registered)"服务器可达，但设备注册尚未成功"
+                else if(!executor.shizukuReady())"服务器与设备注册正常，Shizuku 尚未就绪"
+                else "服务器、设备注册和 Shizuku 检查通过")
+        }catch(cancelled:CancellationException){throw cancelled}
+        catch(error:Exception){ActionFeedback(false,safeError(error))}
+    }
+
+    override suspend fun refreshTaskLibrary():ActionFeedback {
+        return try {
+            val data=client.fetchTaskLibrary()
+            val templates=data.optJSONArray("templates").objects().map { item ->
+                val taskScope=item.optJSONObject("scope")?:JSONObject()
+                val parameters=item.optJSONArray("parameters").objects().map {
+                    TaskTemplateParameter(it.optString("name"),it.optString("default"),it.optInt("max_length",200)) }
+                TaskTemplate(item.optString("template_id"),item.optString("name"),taskScope.optString("package"),taskScope.optString("goal"),
+                    item.optString("device_id"),parameters,item.optBoolean("has_recipe"),buildString{
+                        append("应用：${taskScope.optString("package")}\n目标：${taskScope.optString("goal")}")
+                        append("\n允许输入：${taskScope.stringList("allowed_texts").joinToString("、")}")
+                        append("\n完成条件：${taskScope.stringList("success_texts").joinToString("、")} · 最多 ${taskScope.optInt("max_steps")} 步")
+                        append("\n入口：${taskScope.optString("entry_point","app_home")}")
+                        if(taskScope.optBoolean("allow_vision"))append("\n允许截图辅助，画面会交给任务模型")
+                    },taskScope.optJSONObject("result_spec")?.stringList("fields").orEmpty(),
+                    taskScope.optJSONObject("result_spec")?.optInt("max_items",0)?:0,taskScope.optBoolean("remember_recipe"))
+            }
+            val schedules=data.optJSONArray("schedules").objects().map { item -> RoutineSchedule(
+                item.optString("schedule_id").ifBlank{item.optString("id")},
+                templates.firstOrNull{it.id==item.optString("template_id")}?.name?:item.optString("template_id"),
+                item.optString("device_id"),item.optBoolean("enabled"),item.stringList("daily_times"),item.optString("timezone"),
+                item.optInt("remaining_runs"),item.optInt("remaining_model_calls"),item.optDouble("expires_at",0.0),
+                item.optString("last_status"),item.optBoolean("notify"),item.optString("quiet_start"),item.optString("quiet_end"),item.optInt("per_run_model_calls")) }
+            _taskLibrary.value=TaskLibraryState(true,data.optBoolean("enabled"),templates,schedules,schedulesEnabled=data.optBoolean("schedules_enabled"))
+            ActionFeedback(true,"任务收藏已刷新")
+        }catch(cancelled:CancellationException){throw cancelled}
+        catch(error:Exception){_taskLibrary.update{it.copy(error=safeError(error))};ActionFeedback(false,safeError(error))}
+    }
+
+    private suspend fun libraryAction(successMessage:String,block:suspend()->JSONObject):ActionFeedback = try {
+        block();refreshTaskLibrary();bridge.refreshServerState();ActionFeedback(true,successMessage)
+    }catch(cancelled:CancellationException){throw cancelled}
+    catch(error:Exception){ActionFeedback(false,safeError(error))}
+
+    override suspend fun saveTaskTemplate(runId:String,name:String,parameters:Map<String,String>) =
+        libraryAction("任务已收藏"){client.updateTaskLibrary(JSONObject().put("action","save").put("run_id",runId)
+            .put("name",name).put("parameters",JSONObject(parameters)))}
+    override suspend fun deleteTaskTemplate(templateId:String)=libraryAction("收藏已删除"){
+        client.updateTaskLibrary(JSONObject().put("action","delete").put("template_id",templateId))}
+    override suspend fun proposeTaskTemplate(templateId:String,parameters:Map<String,String>,deviceId:String)=
+        libraryAction("已生成新的待确认任务，请核对范围后批准"){client.proposeTaskTemplate(templateId,parameters,deviceId)}
+    override suspend fun resumeServerTask(runId:String,manualStateConfirmed:Boolean)=
+        libraryAction("已创建续跑提案，批准后会重新观察当前页面"){client.resumeServerTask(runId,manualStateConfirmed)}
+    override suspend fun saveRoutineSchedule(request:RoutineScheduleRequest)=libraryAction("日程已保存，可随时暂停"){
+        client.updateTaskLibrary(JSONObject().put("action","schedule_save").put("template_id",request.templateId)
+            .put("parameters",JSONObject(request.parameters)).put("device_id",request.deviceId)
+            .put("daily_times",JSONArray(listOf(request.time))).put("timezone",request.timezone)
+            .put("max_runs",request.maxRuns).put("max_runs_per_day",1).put("max_model_calls",request.maxModelCalls)
+            .put("per_run_model_calls",request.perRunModelCalls).put("expires_at",request.expiresAt)
+            .put("quiet_start",request.quietStart).put("quiet_end",request.quietEnd).put("notify",request.notify)
+            .put("notify_only_changed",true).put("approved",true).put("enabled",true))}
+    override suspend fun stopRoutineSchedule(scheduleId:String,delete:Boolean)=libraryAction(if(delete)"日程已删除" else "日程已暂停"){
+        client.updateTaskLibrary(JSONObject().put("action",if(delete)"schedule_delete" else "schedule_enable")
+            .put("schedule_id",scheduleId).put("enabled",false))}
 
     override suspend fun proposeUiTask(request: UiTaskRequest): ActionFeedback {
         ready.await()
@@ -887,6 +993,8 @@ class RealAppState(context: Context) : AppState {
         "screen_text" -> "读取屏幕"
         "ui_snapshot" -> "观察任务页面"
         "ui_action" -> "执行界面操作"
+        "ui_visual_snapshot" -> "截图辅助观察"
+        "ui_visual_action" -> "执行截图节点操作"
         "usage_stats" -> "查看使用统计"
         else -> "手机操作"
     }

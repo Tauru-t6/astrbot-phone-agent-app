@@ -122,6 +122,11 @@ data class AppDiagnostics(
     val shizukuDetail: String = "",
     // Independent grant; without it the screen-time card always reads 0.
     val usageAccess: Boolean = false,
+    val registered: Boolean = false,
+    val relayReachable: Boolean = false,
+    val inputMethodEnabled: Boolean = false,
+    val deviceId: String = "",
+    val checkedAtEpochMs: Long = 0,
 )
 
 data class ActionFeedback(val success: Boolean, val message: String)
@@ -135,6 +140,9 @@ data class HealthConnectState(
     val syncing: Boolean = false,
     val lastReadAtEpochMs: Long = 0,
     val lastUploadAtEpochMs: Long = 0,
+    val lastAttemptAtEpochMs: Long = 0,
+    val lastAttemptError: String? = null,
+    val lastAttemptStatus: String = "",
     val latestDate: String = "",
     val latestMetrics: Map<String, Double> = emptyMap(),
     val error: String? = null,
@@ -196,6 +204,13 @@ data class TaskRunSummary(
     val deviceId: String = "",
     val deviceRole: String = "",
     val requesterDeviceId: String = "",
+    val results: List<TaskResultItem> = emptyList(),
+    val resultsVerified: Boolean = false,
+    val parentRunId: String = "",
+    val canResume: Boolean = false,
+    val unknownOutcome: Boolean = false,
+    val resultSource: String = "",
+    val missingResultFields: List<String> = emptyList(),
 )
 
 data class TaskRunStep(
@@ -204,6 +219,24 @@ data class TaskRunStep(
     val reason: String = "",
     val detail: String = "",
 )
+
+data class TaskResultItem(val title: String = "", val author: String = "", val duration: String = "", val url: String = "")
+
+data class TaskTemplateParameter(val name: String, val defaultValue: String, val maxLength: Int = 200)
+data class TaskTemplate(val id: String, val name: String, val packageName: String, val goal: String,
+    val deviceId: String, val parameters: List<TaskTemplateParameter>, val hasRecipe: Boolean,
+    val scopeDescription: String = "",val resultFields:List<String> = emptyList(),val resultCount:Int = 0,
+    val rememberRecipe:Boolean = false)
+data class RoutineSchedule(val id: String, val name: String, val deviceId: String, val enabled: Boolean,
+    val times: List<String>, val timezone: String, val remainingRuns: Int, val remainingModelCalls: Int,
+    val expiresAt: Double, val lastStatus: String, val notify: Boolean = false,
+    val quietStart:String="",val quietEnd:String="",val perRunModelCalls:Int=0)
+data class TaskLibraryState(val supported: Boolean = false, val enabled: Boolean = false,
+    val templates: List<TaskTemplate> = emptyList(), val schedules: List<RoutineSchedule> = emptyList(),
+    val error: String? = null,val schedulesEnabled: Boolean = false)
+data class RoutineScheduleRequest(val templateId: String, val parameters: Map<String,String>, val deviceId: String,
+    val time: String, val timezone: String, val maxRuns: Int, val maxModelCalls: Int, val perRunModelCalls: Int,
+    val expiresAt: Double, val quietStart: String = "23:00", val quietEnd: String = "07:00", val notify: Boolean = false)
 
 // Stage 4: a proposed run waiting for a human decision.
 data class TaskApproval(
@@ -223,6 +256,13 @@ data class TaskApproval(
     val deviceRole: String = "",
     val requesterDeviceId: String = "",
     val completionMode: String = "",
+    val allowVision: Boolean = false,
+    val resultFields: List<String> = emptyList(),
+    val resultCount: Int = 0,
+    val requiredResultCount: Int = 0,
+    val rememberRecipe: Boolean = false,
+    val entryPoint: String = "app_home",
+    val notify: Boolean = false,
 )
 
 data class UiTaskApp(val name: String, val packageName: String)
@@ -243,6 +283,11 @@ data class UiTaskRequest(
     val maxSteps: Int,
     val deviceId: String = "",
     val completionMode: String = "visible_text",
+    val allowVision: Boolean = false,
+    val resultFields: List<String> = emptyList(),
+    val resultCount: Int = 3,
+    val rememberRecipe: Boolean = false,
+    val entryPoint: String = "app_home",
 )
 
 data class RegisteredPhone(
@@ -315,6 +360,7 @@ interface AppState {
     // G1: autonomy overview for the diagnostics/autonomy page.
     val autonomyOverview: Flow<AutonomyOverview> get() = flowOf(AutonomyOverview())
     val healthConnect: Flow<HealthConnectState> get() = flowOf(HealthConnectState())
+    val taskLibrary: Flow<TaskLibraryState> get() = flowOf(TaskLibraryState())
 
     // Intents (suspend, fast-returning; outcomes come through the flows)
     suspend fun sendChat(text: String)
@@ -338,4 +384,13 @@ interface AppState {
     suspend fun setHealthConnectEnabled(enabled: Boolean): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun setHealthConnectSource(packageName: String): ActionFeedback = ActionFeedback(false, "暂不可用")
     suspend fun syncHealthConnect(): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun refreshTaskLibrary(): ActionFeedback = ActionFeedback(false, "服务器尚未支持任务收藏")
+    suspend fun saveTaskTemplate(runId: String, name: String, parameters: Map<String,String>): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun deleteTaskTemplate(templateId: String): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun proposeTaskTemplate(templateId: String, parameters: Map<String,String>, deviceId: String): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun resumeServerTask(runId: String, manualStateConfirmed: Boolean): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun saveRoutineSchedule(request: RoutineScheduleRequest): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun stopRoutineSchedule(scheduleId: String, delete: Boolean = false): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun pairDevice(payload: String): ActionFeedback = ActionFeedback(false, "暂不可用")
+    suspend fun runConnectionCheck(): ActionFeedback = ActionFeedback(false, "暂不可用")
 }

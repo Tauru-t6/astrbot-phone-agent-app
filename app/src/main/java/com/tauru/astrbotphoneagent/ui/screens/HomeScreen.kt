@@ -32,11 +32,13 @@ import androidx.compose.ui.unit.sp
 import com.tauru.astrbotphoneagent.BuildConfig
 import com.tauru.astrbotphoneagent.data.*
 import com.tauru.astrbotphoneagent.logic.HealthSource
+import com.tauru.astrbotphoneagent.logic.healthIsFresh
 import com.tauru.astrbotphoneagent.ui.components.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.min
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
@@ -49,6 +51,7 @@ fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
     val health by appState.healthConnect.collectAsState(initial = HealthConnectState())
     val autonomy by appState.autonomyOverview.collectAsState(initial = AutonomyOverview())
     var panel by rememberSaveable { mutableStateOf<String?>(null) }
+    val uiScope=rememberCoroutineScope()
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 20.dp),
@@ -79,14 +82,21 @@ fun HomeScreen(appState: AppState, onQuickAction: (String) -> Unit) {
             GlassCard(Modifier.fillMaxWidth().clickable(role = Role.Button) { panel = "health" }) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("健康摘要", style = MaterialTheme.typography.titleMedium)
-                    Text(health.latestDate.ifBlank { "Health Connect · ${HealthSource.label(health.originPackage)}" }, style = MaterialTheme.typography.bodySmall)
+                    Text("${HealthSource.label(health.originPackage)} · ${health.latestDate.ifBlank { "暂无记录日期" }}", style = MaterialTheme.typography.bodySmall)
+                    val fresh=healthIsFresh(health)
+                    Text(if(health.lastUploadAtEpochMs==0L)"尚未成功上传" else "最近成功上传：${relativeTime(health.lastUploadAtEpochMs)}${if(!fresh)" · 当前数据待确认" else ""}",
+                        style=MaterialTheme.typography.labelMedium,color=if(fresh)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                     val pieces = listOfNotNull(
                         health.latestMetrics["steps"]?.let { "${it.toLong()} 步" },
                         health.latestMetrics["sleep_minutes"]?.let { "睡眠 ${String.format(Locale.getDefault(), "%.1f", it / 60)} 小时" },
                         health.latestMetrics["heart_rate_avg"]?.let { "心率均值 ${it.toInt()}" },
                     )
-                    Text(health.error ?: pieces.joinToString(" · ").ifBlank { "等待健康数据，点击查看授权与同步" },
+                    Text(health.error ?: health.lastAttemptError ?: pieces.joinToString(" · ").ifBlank { "等待健康数据，点击查看授权与同步" },
                         style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if(health.lastAttemptAtEpochMs>health.lastUploadAtEpochMs) Text("最近尝试：${relativeTime(health.lastAttemptAtEpochMs)}，尚未完成上传",style=MaterialTheme.typography.bodySmall)
+                    TextButton(enabled=!health.syncing,onClick={uiScope.launch{appState.syncHealthConnect()}}) {
+                        Text(if(health.syncing)"同步中…" else if(health.error!=null||!fresh)"重试同步" else "立即同步")
+                    }
                 }
             }
         }
